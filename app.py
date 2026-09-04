@@ -1,9 +1,9 @@
+import html
 import os
 import tempfile
 import time
 
 import streamlit as st
-import streamlit.components.v1 as components
 import torch
 import torch.nn as nn
 import numpy as np
@@ -67,23 +67,41 @@ MODEL_NOTES = {
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# "Forensic console" palette — near-black navy with cobalt + periwinkle blue.
-# Deliberately no cyan/teal: a blue-to-cyan gradient is the single most common
-# "AI product" look, and cyan was flagged twice as reading generically because
-# of it. Two distinct blues instead (no shared hue with teal) reads as a
-# considered choice rather than a template.
+# "Evidence Console" design tokens — a forensic instrument, not an AI-demo
+# showcase. Color carries meaning only: blue = interaction/focus, green =
+# genuine, red = synthetic, amber = warning, everything else is neutral ink.
+# No decorative gradients, no glow-as-default — restraint is the point.
 C = {
-    "bg": "#040814",
-    "panel": "#0a1220",
-    "panel2": "#101d33",
-    "border": "#1c2c4a",
-    "text": "#eef3ff",
-    "muted": "#8695b8",
-    "accent": "#0052ff",
-    "accent2": "#7c96ff",
-    "genuine": "#00e58a",
-    "synthetic": "#ff3d5a",
-    "warn": "#ffb020",
+    "bg": "#0b0d10",
+    "panel": "#14171c",
+    "panel2": "#1b1f26",
+    "border": "#262b33",
+    "text": "#f4f5f7",
+    "muted": "#8b92a0",
+    "accent": "#4f7fff",
+    "genuine": "#16a34a",
+    "synthetic": "#dc2626",
+    "warn": "#d97706",
+}
+
+# Type scale — one assigned job per size, replacing the ad-hoc 11/11.5/12/12.5px
+# values accumulated across many earlier edits.
+TYPE = {
+    "xs": "12px", "sm": "13px", "body": "15px", "lg": "17px",
+    "h4": "20px", "h3": "26px", "h2": "34px", "h1": "44px",
+}
+
+# Spacing — strict 4px base unit; every padding/margin in the app draws from
+# this set rather than being hand-picked per component.
+SPACE = {"1": "4px", "2": "8px", "3": "12px", "4": "16px", "5": "24px", "6": "32px", "7": "48px"}
+
+# Elevation — layered shadows so panels read as surfaces, not flat outlines.
+# Glow is reserved for a handful of high-signal elements (primary button,
+# active nav item, the verdict card) rather than applied everywhere.
+SHADOW = {
+    "sm": "0 1px 3px rgba(0,0,0,.4)",
+    "md": "0 10px 28px -12px rgba(0,0,0,.55)",
+    "lg": "0 22px 48px -16px rgba(0,0,0,.6)",
 }
 
 
@@ -199,10 +217,10 @@ def inject_css():
     st.markdown(
         f"""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap');
 
         html, body, .stApp, [class*="st-emotion"] {{
-            font-family: 'Space Grotesk', -apple-system, sans-serif;
+            font-family: 'IBM Plex Sans', -apple-system, sans-serif;
         }}
         /* Streamlit's Material icons are ligature fonts — the rule above would
            otherwise render them as their literal names ("upload", "arrow_right"). */
@@ -212,386 +230,290 @@ def inject_css():
         }}
         .stApp {{
             background:
-                radial-gradient(1000px 520px at 12% -8%, {C['accent']}12 0%, transparent 58%),
-                radial-gradient(760px 420px at 92% -4%, {C['accent2']}0e 0%, transparent 52%),
-                repeating-linear-gradient(0deg, {C['accent']}05 0 1px, transparent 1px 44px),
-                repeating-linear-gradient(90deg, {C['accent']}05 0 1px, transparent 1px 44px),
+                radial-gradient(1100px 560px at 12% -12%, {C['accent']}0c 0%, transparent 58%),
+                radial-gradient(900px 520px at 100% 0%, {C['accent']}07 0%, transparent 55%),
+                radial-gradient(800px 480px at 50% 112%, {C['genuine']}05 0%, transparent 60%),
+                repeating-linear-gradient(0deg, {C['accent']}05 0 1px, transparent 1px 72px),
+                repeating-linear-gradient(90deg, {C['accent']}05 0 1px, transparent 1px 72px),
                 {C['bg']};
             color: {C['text']};
         }}
         section[data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, {C['panel2']} 0%, {C['bg']} 100%);
+            background: {C['panel']};
             border-right: 1px solid {C['border']};
         }}
         #MainMenu, footer {{ visibility: hidden; }}
 
-        /* ---------- hero with animated equaliser ---------- */
+        /* ---------- typography ---------- */
+        h3 {{
+            font-size: {TYPE['h4']} !important; font-weight: 600 !important;
+            letter-spacing: -.2px; margin: {SPACE['6']} 0 {SPACE['3']} 0 !important;
+        }}
+        h3::before {{
+            content: ""; display: inline-block; width: 3px; height: .85em;
+            background: {C['accent']}; margin-right: {SPACE['2']}; vertical-align: -2px;
+            border-radius: 1px;
+        }}
+        code {{ color: {C['accent']} !important; font-family: 'IBM Plex Mono', monospace !important; }}
+        table {{ color: {C['text']} !important; font-size: {TYPE['sm']}; border-collapse: separate !important; }}
+        thead th {{
+            color: {C['muted']} !important;
+            font-family: 'IBM Plex Mono', monospace !important;
+            font-size: {TYPE['xs']} !important; letter-spacing: .5px; text-transform: uppercase;
+            background: {C['panel2']} !important;
+        }}
+        tbody tr:hover td {{ background: {C['panel2']} !important; }}
+
+        /* ---------- hero: composed page header, not a showcase banner ---------- */
         .hero {{
-            padding: 34px 36px 30px 36px;
-            border-radius: 18px;
-            background: linear-gradient(135deg, {C['panel2']} 0%, {C['panel']} 100%);
+            padding: {SPACE['6']} {SPACE['6']};
+            border-radius: 12px;
+            background: radial-gradient(640px 220px at 88% -30%, {C['accent']}12, transparent 62%), {C['panel']};
             border: 1px solid {C['border']};
-            margin-bottom: 10px;
-            position: relative;
-            overflow: hidden;
-            box-shadow: 0 0 0 1px {C['accent']}0d, 0 18px 48px -22px {C['accent']}40;
+            margin-bottom: {SPACE['4']};
+            animation: riseIn .35s ease-out;
+            position: relative; overflow: hidden;
+            box-shadow: {SHADOW['md']};
         }}
-        .hero:before {{
-            content: "";
-            position: absolute; inset: 0;
-            background: radial-gradient(560px 240px at 88% 12%, {C['accent']}1a, transparent 70%);
-            pointer-events: none;
+        .hero::before, .hero::after {{
+            content: ""; position: absolute; width: 22px; height: 22px;
+            opacity: .5; pointer-events: none;
         }}
-        .hero:after {{
-            content: "";
-            position: absolute; left: 0; right: 0; top: 0; height: 2px;
-            background: linear-gradient(90deg, transparent, {C['accent']}, {C['accent2']}, transparent);
-            animation: sweep 5s ease-in-out infinite;
+        .hero::before {{
+            top: 10px; left: 10px;
+            border-top: 1.5px solid {C['accent']}; border-left: 1.5px solid {C['accent']};
+            border-radius: 4px 0 0 0;
         }}
-        @keyframes sweep {{
-            0%, 100% {{ opacity: .25; transform: translateX(-18%); }}
-            50%      {{ opacity: 1;   transform: translateX(18%); }}
+        .hero::after {{
+            bottom: 10px; right: 10px;
+            border-bottom: 1.5px solid {C['accent']}; border-right: 1.5px solid {C['accent']};
+            border-radius: 0 0 4px 0;
+        }}
+        @keyframes riseIn {{
+            from {{ opacity: 0; transform: translateY(8px); }}
+            to   {{ opacity: 1; transform: translateY(0); }}
+        }}
+        .hero-row {{
+            display: flex; justify-content: space-between; align-items: flex-start;
+            gap: {SPACE['6']}; flex-wrap: wrap; position: relative; z-index: 1;
+        }}
+        .hero-main {{ flex: 1 1 380px; min-width: 0; }}
+        .hero-meta {{ display: flex; flex-direction: column; gap: {SPACE['3']}; padding-top: {SPACE['1']}; }}
+        .hero-meta-item {{ text-align: right; }}
+        .hero-meta-item .k {{
+            display: block; font-family: 'IBM Plex Mono', monospace; font-size: {TYPE['xs']};
+            color: {C['muted']}; letter-spacing: 1px; text-transform: uppercase;
+        }}
+        .hero-meta-item .v {{
+            display: block; font-family: 'IBM Plex Mono', monospace; font-size: {TYPE['lg']};
+            color: {C['text']}; font-weight: 600; margin-top: 2px;
+        }}
+        .pill {{
+            display: inline-block; padding: 3px 10px; border-radius: 4px;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: {TYPE['xs']}; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+            background: {C['panel2']}; color: {C['accent']};
+            border: 1px solid {C['border']}; margin-bottom: {SPACE['3']};
         }}
         .hero h1 {{
-            margin: 0; font-size: 36px; font-weight: 700; letter-spacing: -0.8px;
-            background: linear-gradient(92deg, {C['accent']} 10%, {C['text']} 55%, {C['accent2']} 95%);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            position: relative; z-index: 1;
+            margin: 0; font-size: {TYPE['h1']}; font-weight: 700; letter-spacing: -.8px;
+            color: {C['text']};
         }}
         .hero p {{
-            color: {C['muted']}; margin-top: 10px; font-size: 15px; max-width: 660px;
-            line-height: 1.6; position: relative; z-index: 1;
-        }}
-        .eq {{ position: absolute; right: 34px; bottom: 26px; display: flex;
-               align-items: flex-end; gap: 4px; height: 46px; opacity: .85; }}
-        .eq i {{
-            display: block; width: 4px; border-radius: 2px;
-            background: linear-gradient(180deg, {C['accent']}, {C['accent']}30);
-            animation: bounce 1.15s ease-in-out infinite;
-        }}
-        @keyframes bounce {{
-            0%, 100% {{ height: 8px;  opacity: .45; }}
-            50%      {{ height: 42px; opacity: 1; }}
+            color: {C['muted']}; margin-top: {SPACE['2']}; font-size: {TYPE['body']}; max-width: 680px;
+            line-height: 1.6;
         }}
 
-        .pill {{
-            display: inline-block; padding: 5px 13px; border-radius: 6px;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 10.5px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase;
-            background: {C['accent']}14; color: {C['accent']};
-            border: 1px solid {C['accent']}3a; margin-bottom: 16px;
-            position: relative; z-index: 1;
-        }}
-
-        /* ---------- cards ---------- */
-        .card {{
+        /* ---------- unified card primitive ---------- */
+        .ec-card {{
             background: {C['panel']};
             border: 1px solid {C['border']};
-            border-radius: 14px; padding: 20px 22px; height: 100%;
-            position: relative; overflow: hidden;
-            transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+            border-left: 3px solid {C['border']};
+            border-radius: 8px; padding: {SPACE['4']} {SPACE['5']}; height: 100%;
+            box-shadow: {SHADOW['sm']};
+            transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
         }}
-        .card:before {{
-            content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
-            background: linear-gradient(180deg, {C['accent']}, transparent);
-            opacity: .6;
+        .ec-card:hover {{ box-shadow: {SHADOW['md']}; }}
+        .ec-card--good {{ border-left-color: {C['genuine']}; }}
+        .ec-card--bad {{ border-left-color: {C['synthetic']}; }}
+        .ec-card--warn {{ border-left-color: {C['warn']}; }}
+        .ec-card--interactive:hover {{
+            border-color: {C['accent']}; transform: translateY(-3px);
+            box-shadow: {SHADOW['lg']}, 0 0 0 1px {C['accent']}22;
         }}
-        .card:hover {{
-            transform: translateY(-3px);
-            border-color: {C['accent']}44;
-            box-shadow: 0 14px 34px -18px {C['accent']}66;
+        .ec-card h4 {{ margin: 0 0 {SPACE['1']} 0; font-size: {TYPE['body']}; color: {C['text']}; font-weight: 600; }}
+        .ec-card p {{ margin: 0; font-size: {TYPE['sm']}; color: {C['muted']}; line-height: 1.6; }}
+        .ec-card .ico {{ font-size: 20px; display: block; margin-bottom: {SPACE['3']}; }}
+        .ec-chip {{
+            display: inline-block; padding: 3px 9px; border-radius: 4px;
+            background: {C['panel2']}; border: 1px solid {C['border']}; color: {C['muted']};
+            font-family: 'IBM Plex Mono', monospace; font-size: {TYPE['xs']};
         }}
-        .card h4 {{ margin: 0 0 6px 0; font-size: 15px; color: {C['text']}; font-weight: 700; }}
-        .card p {{ margin: 0; font-size: 13px; color: {C['muted']}; line-height: 1.6; }}
-        .card .ico {{ font-size: 22px; display: block; margin-bottom: 12px; }}
+        @keyframes resultReveal {{
+            from {{ opacity: 0; transform: translateY(8px) scale(.98); }}
+            to   {{ opacity: 1; transform: translateY(0) scale(1); }}
+        }}
+        .result-reveal {{ animation: resultReveal .4s cubic-bezier(.16,.84,.44,1); }}
 
         /* ---------- stats ---------- */
         .stat {{
-            background: linear-gradient(160deg, {C['panel2']}, {C['panel']});
+            background: {C['panel']};
             border: 1px solid {C['border']};
-            border-radius: 14px; padding: 18px 14px; text-align: center;
-            position: relative; overflow: hidden;
-            min-height: 104px;
+            border-radius: 8px; padding: {SPACE['4']} {SPACE['3']}; text-align: center;
+            min-height: 96px;
             display: flex; flex-direction: column;
             align-items: center; justify-content: center;
-            transition: border-color .18s ease, box-shadow .18s ease;
+            box-shadow: {SHADOW['sm']};
+            transition: box-shadow .18s ease, border-color .18s ease;
         }}
-        .stat:hover {{ border-color: {C['accent']}40; box-shadow: 0 0 26px -12px {C['accent']}80; }}
+        .stat:hover {{ box-shadow: {SHADOW['md']}; border-color: {C['accent']}44; }}
         .stat .v {{
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 24px; font-weight: 700; color: {C['accent']};
-            text-shadow: 0 0 20px {C['accent']}55; line-height: 1.2;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: {TYPE['h4']}; font-weight: 600; color: {C['text']}; line-height: 1.2;
         }}
         .stat .k {{
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 9.5px; color: {C['muted']}; text-transform: uppercase;
-            letter-spacing: 1.3px; margin-top: 7px;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: {TYPE['xs']}; color: {C['muted']}; text-transform: uppercase;
+            letter-spacing: 1px; margin-top: {SPACE['2']};
         }}
 
         /* ---------- numbered steps ---------- */
         .step {{
-            display: flex; gap: 16px; align-items: flex-start;
+            display: flex; gap: {SPACE['4']}; align-items: flex-start;
             background: {C['panel']}; border: 1px solid {C['border']};
-            border-radius: 12px; padding: 16px 18px; margin-bottom: 10px;
-            transition: border-color .18s ease, transform .18s ease;
+            border-radius: 8px; padding: {SPACE['4']}; margin-bottom: {SPACE['2']};
+            box-shadow: {SHADOW['sm']};
         }}
-        .step:hover {{ border-color: {C['accent']}3a; transform: translateX(3px); }}
         .step .n {{
-            flex: 0 0 32px; height: 32px; border-radius: 8px;
-            background: linear-gradient(135deg, {C['accent']}, {C['accent2']});
-            color: {C['bg']}; font-family: 'JetBrains Mono', monospace;
-            font-weight: 700; display: flex;
-            align-items: center; justify-content: center; font-size: 14px;
-            box-shadow: 0 0 18px -4px {C['accent']}90;
+            flex: 0 0 28px; height: 28px; border-radius: 6px;
+            background: {C['panel2']}; border: 1px solid {C['border']};
+            color: {C['accent']}; font-family: 'IBM Plex Mono', monospace;
+            font-weight: 600; display: flex;
+            align-items: center; justify-content: center; font-size: {TYPE['sm']};
         }}
-        .step h5 {{ margin: 3px 0 5px 0; font-size: 14px; color: {C['text']}; font-weight: 700; }}
-        .step p {{ margin: 0; font-size: 13px; color: {C['muted']}; line-height: 1.6; }}
+        .step h5 {{ margin: 2px 0 {SPACE['1']} 0; font-size: {TYPE['body']}; color: {C['text']}; font-weight: 600; }}
+        .step p {{ margin: 0; font-size: {TYPE['sm']}; color: {C['muted']}; line-height: 1.6; }}
 
-        /* ---------- banner ---------- */
+        /* ---------- inline notice banner ---------- */
         .banner {{
-            border-radius: 12px; padding: 15px 20px; margin: 8px 0 14px 0;
+            border-radius: 6px; padding: {SPACE['3']} {SPACE['4']}; margin: {SPACE['2']} 0 {SPACE['4']} 0;
             border-left: 3px solid {C['warn']};
-            background: linear-gradient(90deg, {C['warn']}12, {C['warn']}04);
-            color: {C['text']}; font-size: 13.5px; line-height: 1.6;
+            background: {C['panel']};
+            color: {C['text']}; font-size: {TYPE['sm']}; line-height: 1.6;
         }}
         .banner b {{ color: {C['warn']}; }}
 
-        /* ---------- streamlit widgets ---------- */
+        /* ---------- status strip (Detect Voice capture state) ---------- */
+        .status-strip {{
+            display: flex; align-items: center; gap: {SPACE['2']};
+            padding: {SPACE['2']} {SPACE['1']} {SPACE['3']} {SPACE['1']};
+        }}
+        .status-strip .dot {{
+            width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+        }}
+        .status-strip .label {{
+            font-family: 'IBM Plex Mono', monospace; font-size: {TYPE['xs']};
+            letter-spacing: 1px; color: {C['muted']}; text-transform: uppercase;
+        }}
+        .spec-line {{
+            font-family: 'IBM Plex Mono', monospace; font-size: {TYPE['xs']};
+            color: {C['muted']}; letter-spacing: .3px; margin: 0 0 {SPACE['3']} 0;
+        }}
+
+        /* ---------- streamlit native controls ---------- */
         div[data-testid="stFileUploaderDropzone"] {{
-            background: linear-gradient(160deg, {C['panel2']}, {C['panel']});
-            border: 1.5px dashed {C['accent']}55;
-            border-radius: 16px; padding: 6px;
-            transition: border-color .2s ease, box-shadow .2s ease;
+            background: {C['panel']};
+            border: 1.5px dashed {C['border']};
+            border-radius: 8px;
+            transition: border-color .15s ease;
         }}
-        div[data-testid="stFileUploaderDropzone"]:hover {{
-            border-color: {C['accent']};
-            box-shadow: 0 0 30px -10px {C['accent']}70;
+        div[data-testid="stFileUploaderDropzone"]:hover {{ border-color: {C['accent']}; }}
+
+        div[data-testid="stAlert"] {{
+            border-radius: 8px !important; font-size: {TYPE['sm']} !important;
         }}
-        .stTabs [data-baseweb="tab"] {{
-            color: {C['muted']}; font-size: 13.5px; letter-spacing: .2px;
-        }}
+
+        .stTabs [data-baseweb="tab"] {{ color: {C['muted']}; font-size: {TYPE['sm']}; }}
         .stTabs [aria-selected="true"] {{ color: {C['accent']} !important; }}
         .stTabs [data-baseweb="tab-highlight"] {{ background: {C['accent']} !important; }}
 
         /* ---------- bordered containers (input console panels) ---------- */
         div[data-testid="stVerticalBlockBorderWrapper"] {{
             border: 1px solid {C['border']} !important;
-            border-radius: 18px !important;
-            background: linear-gradient(165deg, {C['panel2']}cc, {C['panel']}cc);
-            box-shadow: 0 0 0 1px {C['accent']}0a, 0 20px 48px -28px {C['accent']}55;
+            border-radius: 10px !important;
+            background: {C['panel']};
+            box-shadow: {SHADOW['md']};
         }}
 
-        /* ---------- microphone orb ---------- */
-        .mic-orb {{
-            width: 78px; height: 78px; border-radius: 50%; margin: 4px auto 0 auto;
-            display: flex; align-items: center; justify-content: center; font-size: 32px;
-            background: radial-gradient(circle at 34% 30%, {C['accent2']}, {C['accent']} 72%);
-            animation: micpulse 2.2s ease-out infinite;
+        /* ---------- capture affordances (Detect Voice) — static, not a fake meter ---------- */
+        .io-glyph {{
+            width: 52px; height: 52px; border-radius: 10px; margin: 0 auto {SPACE['3']} auto;
+            display: flex; align-items: center; justify-content: center; font-size: 22px;
+            background: {C['panel2']}; border: 1px solid {C['border']};
         }}
-        @keyframes micpulse {{
-            0%   {{ box-shadow: 0 0 0 0 {C['accent']}55, 0 0 0 0 {C['accent2']}33; }}
-            70%  {{ box-shadow: 0 0 0 16px {C['accent']}00, 0 0 0 32px {C['accent2']}00; }}
-            100% {{ box-shadow: 0 0 0 0 {C['accent']}00, 0 0 0 0 {C['accent2']}00; }}
-        }}
-        .upload-glyph {{
-            width: 78px; height: 78px; border-radius: 22px; margin: 4px auto 0 auto;
-            display: flex; align-items: center; justify-content: center; font-size: 30px;
-            background: linear-gradient(155deg, {C['accent']}22, {C['accent2']}14);
-            border: 1px solid {C['accent']}40;
-        }}
-        .io-caption {{ text-align: center; padding: 2px 0 16px 0; }}
-        .io-caption .t {{
-            color: {C['text']}; font-weight: 700; font-size: 15px; margin-top: 12px;
-        }}
-        .io-caption .s {{ color: {C['muted']}; font-size: 12.5px; margin-top: 3px; }}
-        table {{ color: {C['text']} !important; font-size: 13px; border-collapse: separate !important; }}
-        thead th {{
-            color: {C['accent']} !important;
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 11px !important; letter-spacing: .5px;
-            background: {C['panel2']} !important;
-        }}
-        tbody tr:hover td {{ background: {C['accent']}0d !important; }}
-        h3 {{
-            font-size: 19px !important; font-weight: 700 !important;
-            letter-spacing: -.3px; margin-top: 6px !important;
-        }}
-        h3:before {{
-            content: "▸ "; color: {C['accent']}; font-size: 15px;
-        }}
-        code {{ color: {C['accent2']} !important; font-family: 'JetBrains Mono', monospace !important; }}
+        .io-caption {{ text-align: center; padding: {SPACE['2']} 0 {SPACE['4']} 0; }}
+        .io-caption .t {{ color: {C['text']}; font-weight: 600; font-size: {TYPE['body']}; }}
+        .io-caption .s {{ color: {C['muted']}; font-size: {TYPE['xs']}; margin-top: {SPACE['1']}; }}
 
         /* ---------- buttons ---------- */
         div[data-testid="stButton"] button {{
-            border-radius: 10px !important; font-weight: 600 !important;
+            border-radius: 6px !important; font-weight: 600 !important;
             border: 1px solid {C['border']} !important;
-            transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+            transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease, background-color .15s ease;
         }}
         div[data-testid="stButton"] button:hover {{
-            transform: translateY(-1px); border-color: {C['accent']}80 !important;
-            box-shadow: 0 8px 20px -10px {C['accent']}70;
+            border-color: {C['accent']} !important; transform: translateY(-1px);
+            background-color: {C['panel2']} !important;
         }}
         div[data-testid="stButton"] button[kind="primary"] {{
-            background: linear-gradient(135deg, {C['accent']}, {C['accent2']}) !important;
-            border: none !important; color: {C['bg']} !important;
+            background: {C['accent']} !important;
+            border: none !important; color: #ffffff !important;
+            box-shadow: 0 8px 20px -10px {C['accent']}80;
         }}
         div[data-testid="stButton"] button[kind="primary"]:hover {{
-            box-shadow: 0 10px 26px -10px {C['accent']}90;
+            box-shadow: 0 12px 28px -10px {C['accent']}99; transform: translateY(-1px);
+        }}
+        div[data-testid="stButton"] button:focus-visible,
+        input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {{
+            outline: 2px solid {C['accent']} !important; outline-offset: 2px;
         }}
 
-        /* ---------- gentle entrance for each page's hero ---------- */
-        @keyframes riseIn {{
-            from {{ opacity: 0; transform: translateY(10px); }}
-            to   {{ opacity: 1; transform: translateY(0); }}
+        /* ---------- mobile ---------- */
+        @media (max-width: 768px) {{
+            .hero {{ padding: {SPACE['4']}; }}
+            .hero h1 {{ font-size: {TYPE['h2']}; }}
+            .hero-meta-item {{ text-align: left; }}
+            .ec-card, .stat, .step {{ padding: {SPACE['3']}; }}
         }}
-        .hero {{ animation: riseIn .45s ease-out; }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def inject_particles():
-    """Cursor-reactive particle field painted behind the whole app.
-
-    Runs from a zero-height component iframe, which is same-origin on localhost,
-    so it can attach a canvas to the parent document. If that access is ever
-    blocked the whole thing is skipped silently — it is decoration only.
-    """
-    components.html(
-        f"""
-        <script>
-        (function () {{
-          try {{
-            const doc = window.parent.document;
-            const app = doc.querySelector('.stApp');
-            if (!app) return;
-
-            // Streamlit reruns re-execute this: tear down the previous field first.
-            const prev = doc.getElementById('vg-particles');
-            if (prev) {{ clearInterval(prev.__timer); prev.remove(); }}
-
-            const cv = doc.createElement('canvas');
-            cv.id = 'vg-particles';
-            cv.style.cssText =
-              'position:fixed;top:0;left:0;z-index:0;pointer-events:none;';
-            app.insertBefore(cv, app.firstChild);
-
-            // Keep Streamlit's own content stacked above the canvas.
-            let st = doc.getElementById('vg-particles-css');
-            if (!st) {{
-              st = doc.createElement('style');
-              st.id = 'vg-particles-css';
-              st.textContent =
-                '[data-testid="stAppViewContainer"],[data-testid="stHeader"],' +
-                'section[data-testid="stSidebar"]{{position:relative;z-index:1;}}' +
-                '[data-testid="stAppViewContainer"]{{background:transparent!important;}}';
-              doc.head.appendChild(st);
-            }}
-
-            const ctx = cv.getContext('2d');
-            const COLORS = ['{C["accent"]}', '{C["accent2"]}', '{C["genuine"]}'];
-            let W = 0, H = 0, dots = [];
-
-            function build() {{
-              // Size from the parent viewport: the canvas lives in a fixed-position
-              // layer whose percentage sizing is not reliable at injection time.
-              const dpr = window.parent.devicePixelRatio || 1;
-              W = window.parent.innerWidth || 1280;
-              H = window.parent.innerHeight || 720;
-              cv.style.width = W + 'px';
-              cv.style.height = H + 'px';
-              cv.width = W * dpr; cv.height = H * dpr;
-              ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-              const n = Math.min(340, Math.round((W * H) / 3400));
-              dots = Array.from({{length: n}}, () => {{
-                const x = Math.random() * W, y = Math.random() * H;
-                return {{
-                  hx: x, hy: y, x: x, y: y, vx: 0, vy: 0,
-                  r: 1.1 + Math.random() * 2.4,
-                  c: COLORS[(Math.random() * COLORS.length) | 0],
-                  a: 0.20 + Math.random() * 0.45,
-                  dz: 0.15 + Math.random() * 0.5,          // drift speed
-                  ph: Math.random() * Math.PI * 2          // drift phase
-                }};
-              }});
-            }}
-
-            const mouse = {{x: -9999, y: -9999}};
-            doc.addEventListener('mousemove', e => {{ mouse.x = e.clientX; mouse.y = e.clientY; }});
-            doc.addEventListener('mouseleave', () => {{ mouse.x = -9999; mouse.y = -9999; }});
-            window.parent.addEventListener('resize', build);
-
-            const R = 180;            // cursor influence radius
-            let t = 0;
-
-            function frame() {{
-              t += 0.012;
-              ctx.clearRect(0, 0, W, H);
-              for (const d of dots) {{
-                // gentle ambient drift around the home position
-                const dx0 = Math.cos(t + d.ph) * d.dz * 6;
-                const dy0 = Math.sin(t * 0.9 + d.ph) * d.dz * 6;
-                const tx = d.hx + dx0, ty = d.hy + dy0;
-
-                // repulsion from the cursor, easing off with distance
-                let px = 0, py = 0;
-                const mx = d.x - mouse.x, my = d.y - mouse.y;
-                const dist = Math.hypot(mx, my);
-                if (dist < R && dist > 0.001) {{
-                  const f = (1 - dist / R);
-                  px = (mx / dist) * f * 105;
-                  py = (my / dist) * f * 105;
-                }}
-
-                // spring back toward home, with damping
-                // Tuned by measurement: a stiffer spring here becomes underdamped
-                // and oscillates, which reads as a *weaker* effect, not a stronger one.
-                d.vx += ((tx + px) - d.x) * 0.045;
-                d.vy += ((ty + py) - d.y) * 0.045;
-                d.vx *= 0.82; d.vy *= 0.82;
-                d.x += d.vx; d.y += d.vy;
-
-                ctx.globalAlpha = d.a;
-                ctx.fillStyle = d.c;
-                ctx.beginPath();
-                ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
-                ctx.fill();
-              }}
-              ctx.globalAlpha = 1;
-            }}
-
-            cv.__dbg = {{mouse: mouse, dots: () => dots}};   // inspection hook
-            build();
-            frame();
-            // A timer rather than requestAnimationFrame: this script runs inside a
-            // zero-height iframe, where rAF is throttled or suspended entirely.
-            // 30fps is ample for a slow drifting field.
-            cv.__timer = setInterval(frame, 33);
-          }} catch (e) {{ /* decoration only — never break the app */ }}
-        }})();
-        </script>
-        """,
-        height=0,
-    )
-
-
-# Staggered delays and durations so the equaliser bars never move in lockstep.
-_EQ_BARS = "".join(
-    f'<i style="animation-delay:{d}s;animation-duration:{s}s"></i>'
-    for d, s in [(0.0, 1.10), (0.22, 0.86), (0.44, 1.28), (0.11, 0.98), (0.33, 1.16),
-                 (0.55, 0.90), (0.17, 1.22), (0.39, 1.02), (0.06, 1.34), (0.28, 0.94),
-                 (0.50, 1.18), (0.13, 1.06)]
-)
-
-
-def hero(pill, title, subtitle):
+def hero(pill, title, subtitle, meta=None):
+    """`meta` is an optional list of (label, value) pairs — real system/session
+    data (models loaded, session count, etc.), not decorative filler — shown
+    as a small technical readout to the right of the title."""
+    meta_html = ""
+    if meta:
+        items = "".join(
+            f"""<div class="hero-meta-item"><span class="k">{html.escape(str(k))}</span>
+                <span class="v">{html.escape(str(v))}</span></div>"""
+            for k, v in meta
+        )
+        meta_html = f"""<div class="hero-meta">{items}</div>"""
+    # No line in this block may be blank/whitespace-only: Markdown treats that
+    # as ending the raw-HTML block early, which leaks the remaining closing
+    # tags out as a literal code block. Keeping every line non-empty (the
+    # {meta_html} placeholder sits on the same line as its neighbours rather
+    # than alone) avoids that regardless of whether meta is supplied.
     st.markdown(
-        f"""<div class="hero">
-        <span class="pill">{pill}</span>
-        <h1>{title}</h1><p>{subtitle}</p>
-        <div class="eq">{_EQ_BARS}</div>
-        </div>""",
+        f"""<div class="hero"><div class="hero-row">
+        <div class="hero-main">
+          <span class="pill">{pill}</span>
+          <h1>{title}</h1><p>{subtitle}</p>
+        </div>{meta_html}</div></div>""",
         unsafe_allow_html=True,
     )
 
@@ -607,7 +529,7 @@ def card_row(items):
     cols = st.columns(len(items))
     for col, (icon, head, body) in zip(cols, items):
         col.markdown(
-            f"""<div class="card"><span class="ico">{icon}</span><h4>{head}</h4><p>{body}</p></div>""",
+            f"""<div class="ec-card"><span class="ico">{icon}</span><h4>{head}</h4><p>{body}</p></div>""",
             unsafe_allow_html=True,
         )
 
@@ -621,14 +543,14 @@ def steps(items):
         )
 
 
-def status_card_row(items, color):
-    """Like card_row, but with a status-coloured left edge and tint —
-    used on the Coverage page (confirmed-detects / confirmed-escapes / unknown)."""
+def status_card_row(items, variant):
+    """Like card_row, but with a status-coloured left edge — used on the Coverage
+    page (confirmed-detects / confirmed-escapes / unknown). `variant` is one of
+    "good", "bad", "warn" (an .ec-card--<variant> modifier)."""
     cols = st.columns(len(items))
     for col, (icon, head, body) in zip(cols, items):
         col.markdown(
-            f"""<div class="card" style="border-left:3px solid {color};
-                 background:linear-gradient(160deg,{color}14,{C['panel']});">
+            f"""<div class="ec-card ec-card--{variant}">
                 <span class="ico">{icon}</span><h4>{head}</h4><p>{body}</p></div>""",
             unsafe_allow_html=True,
         )
@@ -646,19 +568,35 @@ def gauge_svg(p_genuine, label, threshold=DEFAULT_THRESHOLD):
     x, y = point(p_genuine)
     tx1, ty1 = point(threshold, r - 13)
     tx2, ty2 = point(threshold, r + 13)
+    ticks = "".join(
+        f'<line x1="{a:.2f}" y1="{b:.2f}" x2="{a2:.2f}" y2="{b2:.2f}" '
+        f'stroke="{C["muted"]}" stroke-width="1.5" opacity="0.5"/>'
+        for v in (0.0, 0.25, 0.5, 0.75, 1.0)
+        for (a, b), (a2, b2) in [(point(v, r - 9), point(v, r + 9))]
+    )
     return f"""
-    <svg viewBox="0 0 200 132" width="100%" style="max-width:270px">
+    <svg viewBox="0 0 200 138" width="100%" style="max-width:270px">
+      <defs>
+        <filter id="arcGlow" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="3" result="blur"/>
+          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
       <path d="M 20 100 A {r} {r} 0 0 1 180 100" fill="none"
             stroke="{C['border']}" stroke-width="16" stroke-linecap="round"/>
+      {ticks}
       <path d="M 20 100 A {r} {r} 0 0 1 {x:.2f} {y:.2f}" fill="none"
-            stroke="{color}" stroke-width="16" stroke-linecap="round"/>
+            stroke="{color}" stroke-width="16" stroke-linecap="round"
+            filter="url(#arcGlow)" opacity="0.94"/>
       <line x1="{tx1:.2f}" y1="{ty1:.2f}" x2="{tx2:.2f}" y2="{ty2:.2f}"
             stroke="{C['text']}" stroke-width="2.5"/>
-      <text x="100" y="86" text-anchor="middle" fill="{color}"
-            font-size="29" font-weight="800">{p_genuine*100:.1f}%</text>
-      <text x="100" y="105" text-anchor="middle" fill="{C['muted']}"
-            font-size="10" letter-spacing="1.1">SCORE — LIKELIHOOD GENUINE</text>
-      <text x="100" y="126" text-anchor="middle" fill="{C['muted']}"
+      <text x="100" y="58" text-anchor="middle" fill="{C['muted']}"
+            font-family="'IBM Plex Mono', monospace" font-size="9.5" letter-spacing="1.6">VERDICT SCORE</text>
+      <text x="100" y="90" text-anchor="middle" fill="{color}"
+            font-size="30" font-weight="800">{p_genuine*100:.1f}%</text>
+      <text x="100" y="109" text-anchor="middle" fill="{C['muted']}"
+            font-size="10" letter-spacing="1.1">LIKELIHOOD GENUINE</text>
+      <text x="100" y="130" text-anchor="middle" fill="{C['muted']}"
             font-size="10">threshold {threshold:.2f} (marked)</text>
     </svg>
     """
@@ -673,6 +611,8 @@ def plot_analysis(y, sr, title):
             s.set_color(C["border"])
 
     librosa.display.waveshow(y, sr=sr, ax=ax1, color=C["accent"])
+    ax1.fill_between(np.linspace(0, len(y) / sr, num=len(y)), y, color=C["accent"], alpha=0.15, linewidth=0)
+    ax1.axhline(0, color=C["border"], linewidth=0.8)
     ax1.set_title(f"Waveform — {title}", color=C["text"], fontsize=10)
     ax1.set_xlabel("")
 
@@ -705,6 +645,7 @@ def plot_mfcc(mfcc):
 
 
 def result_card(filename, label, margin, duration, sr, model_name, threshold, p_genuine):
+    variant = "good" if label == "Genuine" else "bad"
     color = C["genuine"] if label == "Genuine" else C["synthetic"]
     icon = "✅" if label == "Genuine" else "⚠️"
     verdict = "Genuine human voice" if label == "Genuine" else "AI-generated / cloned voice"
@@ -712,28 +653,35 @@ def result_card(filename, label, margin, duration, sr, model_name, threshold, p_
     thr_note = (f"Score {p_genuine:.3f} is {rel} the {threshold:.2f} threshold."
                 + ("" if abs(threshold - DEFAULT_THRESHOLD) < 1e-9
                    else f" (default is {DEFAULT_THRESHOLD:.2f})"))
+    # Confidence-scaled tint: a stronger verdict gets a slightly richer wash.
+    # Driven by the real margin value, not a decorative constant.
+    tint_alpha = 12 + round(margin * 14)  # ~7-15% opacity
+    tint = f"{color}{tint_alpha:02x}"
+    chips = "".join(
+        f'<span class="ec-chip">{html.escape(c)}</span>'
+        for c in (f"{duration:.2f}s", f"{sr} Hz", model_name)
+    )
     st.markdown(
         f"""
-        <div style="background:linear-gradient(135deg,{color}1f,{C['panel']});
-                    border:1px solid {color}55;border-radius:16px;padding:20px 24px;margin:6px 0 14px 0;">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;">
+        <div class="ec-card ec-card--{variant} result-reveal"
+             style="padding:{SPACE['5']};margin:{SPACE['1']} 0 {SPACE['4']} 0;
+             background:linear-gradient(160deg, {tint}, {C['panel']} 70%);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:{SPACE['4']};flex-wrap:wrap;">
             <div>
-              <div style="color:{C['muted']};font-size:11px;letter-spacing:.9px;text-transform:uppercase;">{filename}</div>
-              <div style="color:{color};font-size:24px;font-weight:800;margin-top:4px;">{icon} {label}</div>
-              <div style="color:{C['muted']};font-size:13px;margin-top:2px;">{verdict}</div>
+              <div style="color:{C['muted']};font-size:{TYPE['xs']};letter-spacing:.6px;text-transform:uppercase;">{html.escape(filename)}</div>
+              <div style="color:{color};font-size:{TYPE['h2']};font-weight:800;margin-top:{SPACE['1']};letter-spacing:-.5px;">{icon} {label}</div>
+              <div style="color:{C['muted']};font-size:{TYPE['sm']};margin-top:2px;">{verdict}</div>
             </div>
             <div style="text-align:right;">
-              <div style="color:{C['text']};font-size:26px;font-weight:800;">{margin*100:.1f}%</div>
-              <div style="color:{C['muted']};font-size:11px;">margin from threshold</div>
+              <div style="color:{C['text']};font-size:{TYPE['h3']};font-weight:700;">{margin*100:.1f}%</div>
+              <div style="color:{C['muted']};font-size:{TYPE['xs']};">confidence margin</div>
             </div>
           </div>
-          <div style="background:{C['border']};border-radius:6px;height:8px;margin-top:16px;overflow:hidden;">
-            <div style="background:{color};width:{margin*100:.1f}%;height:100%;"></div>
+          <div style="background:{C['border']};border-radius:4px;height:6px;margin-top:{SPACE['4']};overflow:hidden;">
+            <div style="background:{color};width:{margin*100:.1f}%;height:100%;box-shadow:0 0 10px {color}80;"></div>
           </div>
-          <div style="color:{C['muted']};font-size:12px;margin-top:12px;">{thr_note}</div>
-          <div style="color:{C['muted']};font-size:12px;margin-top:4px;">
-            Duration {duration:.2f}s &nbsp;•&nbsp; {sr} Hz &nbsp;•&nbsp; Model: {model_name}
-          </div>
+          <div style="color:{C['muted']};font-size:{TYPE['xs']};margin-top:{SPACE['3']};">{thr_note}</div>
+          <div style="margin-top:{SPACE['3']};display:flex;gap:{SPACE['2']};flex-wrap:wrap;">{chips}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -803,12 +751,14 @@ def analyse(model, model_name, filename, raw_bytes, show_details=True,
 
     if show_details:
         with st.expander("🔬 Show the signal analysis behind this result"):
-            fig = plot_analysis(y, sr, filename)
-            st.pyplot(fig)
-            plt.close(fig)
-            fig2 = plot_mfcc(mfcc)
-            st.pyplot(fig2)
-            plt.close(fig2)
+            with st.container(border=True):
+                fig = plot_analysis(y, sr, filename)
+                st.pyplot(fig)
+                plt.close(fig)
+            with st.container(border=True):
+                fig2 = plot_mfcc(mfcc)
+                st.pyplot(fig2)
+                plt.close(fig2)
 
     st.session_state.history.append({
         "Filename": filename,
@@ -828,7 +778,8 @@ def page_overview(models):
          "Synthetic Voice Detection",
          "An end-to-end system that listens to a voice clip and determines whether it came from a "
          "real human or an AI voice-cloning engine — built to counter voice-based scams and support "
-         "forensic analysis.")
+         "forensic analysis.",
+         meta=[("Architecture", "CNN + BiLSTM"), ("Models loaded", str(len(models)))])
 
     st.markdown("### Why this matters")
     card_row([
@@ -853,9 +804,6 @@ def page_overview(models):
         f"""
         <svg viewBox="0 0 900 120" width="100%" style="margin:6px 0 10px 0;">
           <defs>
-            <linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stop-color="{C['accent']}"/><stop offset="100%" stop-color="{C['accent2']}"/>
-            </linearGradient>
             <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3"
                     orient="auto" markerUnits="strokeWidth">
               <path d="M0,0 L0,6 L7,3 z" fill="{C['muted']}"/>
@@ -863,10 +811,10 @@ def page_overview(models):
           </defs>
           {''.join(
             f'''<g>
-              <rect x="{18 + i*178}" y="30" width="150" height="58" rx="12"
-                    fill="{C['panel']}" stroke="url(#g1)" stroke-width="1.4"/>
+              <rect x="{18 + i*178}" y="30" width="150" height="58" rx="8"
+                    fill="{C['panel']}" stroke="{C['border']}" stroke-width="1.2"/>
               <text x="{93 + i*178}" y="55" text-anchor="middle" fill="{C['text']}"
-                    font-size="13" font-weight="700">{t}</text>
+                    font-size="13" font-weight="600">{t}</text>
               <text x="{93 + i*178}" y="72" text-anchor="middle" fill="{C['muted']}"
                     font-size="10.5">{s}</text>
             </g>
@@ -880,10 +828,10 @@ def page_overview(models):
             ])
           )}
           <g>
-            <rect x="730" y="30" width="150" height="58" rx="12"
-                  fill="{C['genuine']}18" stroke="{C['genuine']}" stroke-width="1.4"/>
+            <rect x="730" y="30" width="150" height="58" rx="8"
+                  fill="{C['panel']}" stroke="{C['genuine']}" stroke-width="1.2"/>
             <text x="805" y="55" text-anchor="middle" fill="{C['text']}"
-                  font-size="13" font-weight="700">Verdict</text>
+                  font-size="13" font-weight="600">Verdict</text>
             <text x="805" y="72" text-anchor="middle" fill="{C['muted']}"
                   font-size="10.5">genuine / synthetic</text>
           </g>
@@ -892,13 +840,26 @@ def page_overview(models):
         unsafe_allow_html=True,
     )
 
-    st.info("Open **Detect Voice** in the sidebar to run a live analysis.")
+    st.markdown(
+        f"""<div class="ec-card ec-card--interactive" style="display:flex;align-items:center;
+             justify-content:space-between;gap:{SPACE['4']};flex-wrap:wrap;">
+          <div>
+            <div style="color:{C['text']};font-weight:600;font-size:{TYPE['body']};">Ready to try it?</div>
+            <div style="color:{C['muted']};font-size:{TYPE['sm']};margin-top:{SPACE['1']};">
+            Open Detect Voice in the sidebar to upload or record a clip and get a live verdict.</div>
+          </div>
+          <div style="color:{C['accent']};font-family:'IBM Plex Mono',monospace;font-size:{TYPE['sm']};
+               font-weight:600;white-space:nowrap;">Detect Voice →</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 
 def page_detect(models):
     hero("Live analysis", "Detect Voice",
          "Upload existing audio files or record directly from your microphone. Every clip stays playable "
-         "next to its verdict, so results can be replayed and verified on the spot.")
+         "next to its verdict, so results can be replayed and verified on the spot.",
+         meta=[("Models loaded", str(len(models))), ("Session log", str(len(st.session_state.history)))])
 
     if not models:
         st.error(f"No model file found. Place `{BASELINE_MODEL}` in the app folder and reload.")
@@ -906,46 +867,44 @@ def page_detect(models):
 
     names = list(models.keys())
     default_idx = len(names) - 1
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        chosen = st.selectbox("Detection model", names, index=default_idx,
-                              help="Compare the original and fine-tuned models on the same clip.")
-    with col2:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        details = st.checkbox("Show signal analysis", value=True)
 
-    model = load_model(models[chosen])
-    chosen_path = models[chosen]
+    with st.expander("⚙️  Model & threshold settings", expanded=False):
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            chosen = st.selectbox("Detection model", names, index=default_idx,
+                                  help="Compare the original and fine-tuned models on the same clip.")
+        with col2:
+            details = st.checkbox("Show signal analysis", value=True)
 
-    note = MODEL_NOTES.get(chosen_path)
-    scores = MODEL_SCORES.get(chosen_path)
-    if note and scores:
-        asv, itw = scores["asv"], scores["itw"]
-        st.markdown(
-            f"""<div style="background:{C['panel']};border:1px solid {C['border']};
-                 border-radius:14px;padding:14px 18px;margin:2px 0 12px 0;">
-              <div style="color:{C['muted']};font-size:13px;line-height:1.55;">{note}</div>
-              <div style="display:flex;gap:26px;margin-top:10px;flex-wrap:wrap;">
-                <div><span style="color:{C['muted']};font-size:11px;">STUDIO AUDIO (ASVspoof)</span><br/>
-                  <b style="color:{C['text']};font-size:15px;">{asv[0]*100:.1f}%</b>
-                  <span style="color:{C['muted']};font-size:11.5px;"> acc &nbsp;·&nbsp;
-                  {asv[2]*100:.1f}% prec</span></div>
-                <div><span style="color:{C['muted']};font-size:11px;">REAL-WORLD (In-the-Wild)</span><br/>
-                  <b style="color:{C['text']};font-size:15px;">{itw[0]*100:.1f}%</b>
-                  <span style="color:{C['muted']};font-size:11.5px;"> acc &nbsp;·&nbsp;
-                  {itw[2]*100:.1f}% prec</span></div>
-                <div><span style="color:{C['muted']};font-size:11px;">EER (studio / real-world)</span><br/>
-                  {f'<b style="color:{C["text"]};font-size:15px;">{scores["eer"][0]*100:.2f}%</b>'
-                   f'<span style="color:{C["muted"]};font-size:11.5px;"> / </span>'
-                   f'<b style="color:{C["text"]};font-size:15px;">{scores["eer"][1]*100:.2f}%</b>'
-                   if scores.get("eer") else
-                   f'<span style="color:{C["muted"]};font-size:13px;">not yet measured</span>'}</div>
-              </div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+        chosen_path = models[chosen]
+        note = MODEL_NOTES.get(chosen_path)
+        scores = MODEL_SCORES.get(chosen_path)
+        if note and scores:
+            asv, itw = scores["asv"], scores["itw"]
+            st.markdown(
+                f"""<div class="ec-card" style="margin-top:{SPACE['3']};">
+                  <div style="color:{C['muted']};font-size:{TYPE['sm']};line-height:1.55;">{note}</div>
+                  <div style="display:flex;gap:{SPACE['6']};margin-top:{SPACE['3']};flex-wrap:wrap;">
+                    <div><span style="color:{C['muted']};font-size:{TYPE['xs']};">STUDIO AUDIO (ASVspoof)</span><br/>
+                      <b style="color:{C['text']};font-size:{TYPE['body']};">{asv[0]*100:.1f}%</b>
+                      <span style="color:{C['muted']};font-size:{TYPE['xs']};"> acc &nbsp;·&nbsp;
+                      {asv[2]*100:.1f}% prec</span></div>
+                    <div><span style="color:{C['muted']};font-size:{TYPE['xs']};">REAL-WORLD (In-the-Wild)</span><br/>
+                      <b style="color:{C['text']};font-size:{TYPE['body']};">{itw[0]*100:.1f}%</b>
+                      <span style="color:{C['muted']};font-size:{TYPE['xs']};"> acc &nbsp;·&nbsp;
+                      {itw[2]*100:.1f}% prec</span></div>
+                    <div><span style="color:{C['muted']};font-size:{TYPE['xs']};">EER (studio / real-world)</span><br/>
+                      {f'<b style="color:{C["text"]};font-size:{TYPE["body"]};">{scores["eer"][0]*100:.2f}%</b>'
+                       f'<span style="color:{C["muted"]};font-size:{TYPE["xs"]};"> / </span>'
+                       f'<b style="color:{C["text"]};font-size:{TYPE["body"]};">{scores["eer"][1]*100:.2f}%</b>'
+                       if scores.get("eer") else
+                       f'<span style="color:{C["muted"]};font-size:{TYPE["sm"]};">not yet measured</span>'}</div>
+                  </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
-    with st.expander("⚖️  Decision threshold"):
+        st.markdown(f"<div style='height:{SPACE['4']}'></div>", unsafe_allow_html=True)
         st.caption(
             "The model outputs a score from 0 to 1 for how likely a voice is genuine. The threshold "
             "is the cut-off above which it is declared Genuine. Raising it makes the system stricter — "
@@ -976,7 +935,9 @@ def page_detect(models):
                 "very differently, which is why a single fixed cut-off suits none of them perfectly."
             )
 
+    model = load_model(models[chosen])
     threshold = thr
+
     if abs(threshold - DEFAULT_THRESHOLD) > 1e-9:
         st.caption(f"⚖️ Active decision threshold: **{threshold:.2f}** — {threshold_stance(threshold)} "
                    f"(default {DEFAULT_THRESHOLD:.2f})")
@@ -989,94 +950,136 @@ def page_detect(models):
             unsafe_allow_html=True,
         )
 
-    mode = option_menu(
-        menu_title=None,
-        options=["Upload Audio", "Record Live"],
-        icons=["cloud-arrow-up-fill", "mic-fill"],
-        orientation="horizontal",
-        default_index=0,
-        key="input_mode",
-        styles={
-            "container": {
-                "padding": "5px", "background-color": C["panel"],
-                "border": f"1px solid {C['border']}", "border-radius": "14px",
-            },
-            "icon": {"color": C["accent"], "font-size": "16px"},
-            "nav-link": {
-                "font-size": "13.5px", "text-align": "center", "padding": "12px 10px",
-                "border-radius": "10px", "color": C["muted"], "margin": "0 3px",
-                "font-weight": "600",
-            },
-            "nav-link-selected": {
-                "background": f"linear-gradient(135deg,{C['accent']},{C['accent2']})",
-                "color": C["bg"], "font-weight": "700",
-            },
-        },
-    )
+    # Two-column showcase layout: capture on the left, verdict on the right —
+    # nothing here changes the capture/analysis logic, only where it renders.
+    capture_col, result_col = st.columns([1, 1.3], gap="large")
 
-    with st.container(border=True):
+    with capture_col:
+        mode = option_menu(
+            menu_title=None,
+            options=["Upload Audio", "Record Live"],
+            icons=["cloud-arrow-up-fill", "mic-fill"],
+            orientation="horizontal",
+            default_index=0,
+            key="input_mode",
+            styles={
+                "container": {
+                    "padding": "4px", "background-color": C["panel"],
+                    "border": f"1px solid {C['border']}", "border-radius": "8px",
+                },
+                "icon": {"color": C["accent"], "font-size": "14px"},
+                "nav-link": {
+                    "font-size": TYPE["sm"], "text-align": "center", "padding": "10px 8px",
+                    "border-radius": "6px", "color": C["muted"], "margin": "0 2px",
+                    "font-weight": "600",
+                },
+                "nav-link-selected": {
+                    "background-color": C["accent"], "color": "#ffffff", "font-weight": "600",
+                },
+            },
+        )
+
+        # Status strip reflects real session state (nothing simulated): which
+        # capture mode is active and where it sits in the record/review flow.
         if mode == "Upload Audio":
-            st.markdown(
-                f"""<div class="io-caption">
-                  <div class="upload-glyph">📤</div>
-                  <div class="t">Drop a clip to analyse</div>
-                  <div class="s">WAV · MP3 · FLAC — multiple files supported</div>
-                </div>""",
-                unsafe_allow_html=True,
-            )
-            files = st.file_uploader("Audio files", type=["wav", "mp3", "flac"],
-                                     accept_multiple_files=True, label_visibility="collapsed")
-            if files:
-                for f in files:
-                    st.divider()
-                    st.markdown(f"#### 📄 {f.name}")
-                    analyse(model, chosen, f.name, f.getvalue(), details, threshold)
-            else:
-                st.info("Upload one or more clips to analyse them.")
+            status_color, status_label = C["muted"], "AWAITING INPUT"
         else:
-            pending = st.session_state.pending_recording
+            _pending = st.session_state.pending_recording
+            if _pending and not st.session_state.recording_analysed:
+                status_color, status_label = C["warn"], "AWAITING CONFIRMATION"
+            elif _pending and st.session_state.recording_analysed:
+                status_color, status_label = C["genuine"], "ANALYSED"
+            else:
+                status_color, status_label = C["muted"], "STANDBY — READY TO RECORD"
+        st.markdown(
+            f"""<div class="status-strip">
+              <span class="dot" style="background:{status_color};box-shadow:0 0 8px {status_color}90;"></span>
+              <span class="label">{status_label}</span>
+            </div>
+            <div class="spec-line">TARGET FORMAT · 16 kHz mono · 40×400 MFCC</div>""",
+            unsafe_allow_html=True,
+        )
+
+        # (filename, raw_bytes, show_playback) tuples ready to be analysed —
+        # collected here, rendered in the result column below.
+        ready = []
+
+        with st.container(border=True):
+            if mode == "Upload Audio":
+                st.markdown(
+                    f"""<div class="io-caption">
+                      <div class="io-glyph">📤</div>
+                      <div class="t">Drop a clip to analyse</div>
+                      <div class="s">WAV · MP3 · FLAC — multiple files supported</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+                files = st.file_uploader("Audio files", type=["wav", "mp3", "flac"],
+                                         accept_multiple_files=True, label_visibility="collapsed")
+                if files:
+                    for f in files:
+                        ready.append((f.name, f.getvalue(), True))
+                else:
+                    st.info("Upload one or more clips to analyse them.")
+            else:
+                pending = st.session_state.pending_recording
+                st.markdown(
+                    f"""<div class="io-caption">
+                      <div class="io-glyph">🎙️</div>
+                      <div class="t">{"Speak, then stop — you'll get to hear it back first" if not pending else "Happy with the take?"}</div>
+                      <div class="s">5-10 seconds works best</div>
+                    </div>""",
+                    unsafe_allow_html=True,
+                )
+                audio = mic_recorder(start_prompt="⏺️  Start recording", stop_prompt="⏹️  Stop recording",
+                                     just_once=False, use_container_width=True,
+                                     key=f"rec_{st.session_state.rec_nonce}")
+                # A fresh recording (bytes differ from whatever is already pending) enters
+                # review — it is NOT analysed yet. mic_recorder keeps returning its last
+                # result on every rerun, so bytes must be compared, not just truthiness.
+                if audio and (pending is None or audio["bytes"] != pending["bytes"]):
+                    st.session_state.pending_recording = {
+                        "bytes": audio["bytes"],
+                        "name": f"live_recording_{time.strftime('%H%M%S')}.wav",
+                    }
+                    st.session_state.recording_analysed = False
+                    st.rerun()
+
+                pending = st.session_state.pending_recording
+                if pending:
+                    st.audio(pending["bytes"])
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        discard = st.button("✖️  Discard & re-record", use_container_width=True)
+                    with c2:
+                        confirm = st.button("🔍  Detect Voice", use_container_width=True, type="primary")
+                    if discard:
+                        st.session_state.pending_recording = None
+                        st.session_state.recording_analysed = False
+                        st.session_state.rec_nonce += 1  # forces mic_recorder to reset its own state
+                        st.rerun()
+                    if confirm:
+                        st.session_state.recording_analysed = True
+                    if st.session_state.recording_analysed:
+                        ready.append((pending["name"], pending["bytes"], False))
+
+    with result_col:
+        if ready:
+            for filename, raw_bytes, show_playback in ready:
+                st.markdown(f"#### {filename}")
+                analyse(model, chosen, filename, raw_bytes, details, threshold,
+                        show_playback=show_playback)
+                st.divider()
+        else:
             st.markdown(
-                f"""<div class="io-caption">
-                  <div class="mic-orb">🎙️</div>
-                  <div class="t">{"Speak, then stop — you'll get to hear it back first" if not pending else "Happy with the take?"}</div>
-                  <div class="s">5-10 seconds works best</div>
+                f"""<div class="ec-card" style="text-align:center;padding:{SPACE['7']} {SPACE['5']};">
+                  <div style="font-size:26px;margin-bottom:{SPACE['3']};">🗂️</div>
+                  <div style="color:{C['text']};font-weight:600;font-size:{TYPE['body']};">No result yet</div>
+                  <div style="color:{C['muted']};font-size:{TYPE['sm']};margin-top:{SPACE['1']};">
+                  Upload or record a clip on the left to see its verdict here.</div>
                 </div>""",
                 unsafe_allow_html=True,
             )
-            audio = mic_recorder(start_prompt="⏺️  Start recording", stop_prompt="⏹️  Stop recording",
-                                 just_once=False, use_container_width=True,
-                                 key=f"rec_{st.session_state.rec_nonce}")
-            # A fresh recording (bytes differ from whatever is already pending) enters
-            # review — it is NOT analysed yet. mic_recorder keeps returning its last
-            # result on every rerun, so bytes must be compared, not just truthiness.
-            if audio and (pending is None or audio["bytes"] != pending["bytes"]):
-                st.session_state.pending_recording = {
-                    "bytes": audio["bytes"],
-                    "name": f"live_recording_{time.strftime('%H%M%S')}.wav",
-                }
-                st.session_state.recording_analysed = False
-                st.rerun()
-
-            pending = st.session_state.pending_recording
-            if pending:
-                st.audio(pending["bytes"])
-                c1, c2 = st.columns(2)
-                with c1:
-                    discard = st.button("✖️  Discard & re-record", use_container_width=True)
-                with c2:
-                    confirm = st.button("🔍  Detect Voice", use_container_width=True, type="primary")
-                if discard:
-                    st.session_state.pending_recording = None
-                    st.session_state.recording_analysed = False
-                    st.session_state.rec_nonce += 1  # forces mic_recorder to reset its own state
-                    st.rerun()
-                if confirm:
-                    st.session_state.recording_analysed = True
-                if st.session_state.recording_analysed:
-                    st.divider()
-                    st.markdown(f"#### 🎤 {pending['name']}")
-                    analyse(model, chosen, pending["name"], pending["bytes"], details, threshold,
-                            show_playback=False)
 
 
 def page_how():
@@ -1107,9 +1110,9 @@ def page_how():
         ("Input", "1×40×400", 86, C['accent']),
         ("Conv2D", "16 filters", 74, C['accent']),
         ("MaxPool", "÷2", 62, C['accent']),
-        ("Conv2D", "32 filters", 62, C['accent2']),
-        ("MaxPool", "÷2", 50, C['accent2']),
-        ("BiLSTM", "64×2 hidden", 74, C['accent2']),
+        ("Conv2D", "32 filters", 62, C['muted']),
+        ("MaxPool", "÷2", 50, C['muted']),
+        ("BiLSTM", "64×2 hidden", 74, C['muted']),
         ("Dense", "32 units", 44, C['genuine']),
         ("Output", "genuine / synthetic", 34, C['genuine']),
     ]
@@ -1133,6 +1136,17 @@ def page_how():
           )}
         </svg>
         """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f"""<div style="display:flex;gap:{SPACE['5']};flex-wrap:wrap;margin:{SPACE['2']} 0 {SPACE['1']} 0;">
+          <span style="color:{C['muted']};font-size:{TYPE['xs']};">
+            <span style="color:{C['accent']};">■</span> feature extraction</span>
+          <span style="color:{C['muted']};font-size:{TYPE['xs']};">
+            <span style="color:{C['muted']};">■</span> deeper representation</span>
+          <span style="color:{C['muted']};font-size:{TYPE['xs']};">
+            <span style="color:{C['genuine']};">■</span> decision</span>
+        </div>""",
         unsafe_allow_html=True,
     )
 
@@ -1299,7 +1313,15 @@ def page_report():
          "for inclusion in project documentation.")
 
     if not st.session_state.history:
-        st.info("No clips analysed yet. Head to **Detect Voice** to begin.")
+        st.markdown(
+            f"""<div class="ec-card" style="text-align:center;padding:{SPACE['7']} {SPACE['5']};">
+              <div style="font-size:26px;margin-bottom:{SPACE['3']};">📭</div>
+              <div style="color:{C['text']};font-weight:600;font-size:{TYPE['body']};">No clips analysed yet</div>
+              <div style="color:{C['muted']};font-size:{TYPE['sm']};margin-top:{SPACE['1']};">
+              Head to Detect Voice to run your first analysis — results will appear here, ready to export.</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
         return
 
     rows = st.session_state.history
@@ -1309,9 +1331,35 @@ def page_report():
               (str(len(rows) - genuine), "Synthetic")])
 
     st.markdown("### Detailed log")
-    st.table(rows)
-
     cols = ["Filename", "Prediction", "Score", "Threshold", "Model", "Time"]
+
+    def _badge(label):
+        color = C["genuine"] if label == "Genuine" else C["synthetic"]
+        return (f'<span style="display:inline-block;padding:2px 9px;border-radius:4px;'
+                f'background:{color}1f;color:{color};font-weight:600;font-size:{TYPE["xs"]};">'
+                f'{html.escape(label)}</span>')
+
+    head_cells = "".join(f'<th style="padding:{SPACE["3"]} {SPACE["4"]};">{c}</th>' for c in cols)
+    body_rows = "".join(
+        "<tr>" + "".join(
+            f'<td style="padding:{SPACE["3"]} {SPACE["4"]};border-top:1px solid {C["border"]};'
+            f'font-size:{TYPE["sm"]};color:{C["text"]};">'
+            + (_badge(r.get(c, "")) if c == "Prediction" else html.escape(str(r.get(c, ""))))
+            + "</td>"
+            for c in cols
+        ) + "</tr>"
+        for r in rows
+    )
+    st.markdown(
+        f"""<div class="ec-card" style="padding:0;overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;white-space:nowrap;">
+            <thead><tr>{head_cells}</tr></thead>
+            <tbody>{body_rows}</tbody>
+          </table>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
     csv = ",".join(cols) + "\n" + "\n".join(
         ",".join(str(r.get(c, "")).replace(",", ";") for c in cols) for r in rows
     )
@@ -1331,6 +1379,12 @@ def page_coverage():
          "measured and working, what's measured and failing, and what's genuinely "
          "still unknown — rather than a single blanket claim of \"detects synthetic voices.\"")
 
+    stat_row([
+        ("4", "Confirmed working"),
+        ("2", "Confirmed gaps"),
+        ("2", "Untested / unknown"),
+    ])
+
     st.markdown("### ✅ Confirmed — detects well (measured)")
     status_card_row([
         ("🎯", "ASVspoof 2019 attacks (seen)",
@@ -1347,7 +1401,7 @@ def page_coverage():
          "Tested against the full 71,237-clip eval set — 13 attack types absent from all "
          "training data. 10 of 13 (TTS and hybrid TTS/VC methods) caught at 85-100%, "
          "consistently across every model version — genuine generalisation, not memorisation."),
-    ], C["genuine"])
+    ], "good")
 
     st.markdown("### ❌ Confirmed — escapes detection (measured, failing)")
     status_card_row([
@@ -1364,7 +1418,7 @@ def page_coverage():
          "consistently across all four model versions. This is the project's core target "
          "scenario: cloning a real person while preserving their natural prosody. Actively "
          "being addressed with additional voice-conversion training data (see About)."),
-    ], C["synthetic"])
+    ], "bad")
 
     st.markdown("### ❓ Unknown — never actually tested")
     status_card_row([
@@ -1374,7 +1428,7 @@ def page_coverage():
         ("📞", "Telephone-codec compressed audio",
          "8kHz G.711/GSM — the actual medium of real scam calls. Never trained or "
          "tested on codec-degraded audio at all."),
-    ], C["warn"])
+    ], "warn")
 
     st.markdown(
         f"""<div class="banner"><b>Why state this at all.</b> A demo that says exactly what's
@@ -1436,7 +1490,6 @@ def page_about():
 # ============================================================
 st.set_page_config(page_title="Synthetic Voice Detection", page_icon="🎙️", layout="wide")
 inject_css()
-inject_particles()
 
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -1455,27 +1508,26 @@ models = available_models()
 
 with st.sidebar:
     st.markdown(
-        f"""<div style="padding:4px 2px 16px 2px;">
-          <div style="display:flex;align-items:center;gap:9px;">
-            <div style="width:9px;height:9px;border-radius:50%;background:{C['genuine']};
-                 box-shadow:0 0 12px {C['genuine']};"></div>
-            <div style="font-size:21px;font-weight:700;letter-spacing:-.4px;
-                 background:linear-gradient(90deg,{C['accent']},{C['accent2']});
-                 -webkit-background-clip:text;-webkit-text-fill-color:transparent;">VoiceGuard</div>
-          </div>
-          <div style="color:{C['muted']};font-family:'JetBrains Mono',monospace;
-               font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;margin-top:5px;">
+        f"""<div style="padding:{SPACE['1']} 2px {SPACE['5']} 2px;">
+          <div style="font-size:18px;font-weight:700;letter-spacing:-.2px;color:{C['text']};">VoiceGuard</div>
+          <div style="color:{C['muted']};font-family:'IBM Plex Mono',monospace;
+               font-size:{TYPE['xs']};letter-spacing:1px;text-transform:uppercase;margin-top:{SPACE['1']};">
           Synthetic Voice Detection</div>
         </div>""",
         unsafe_allow_html=True,
     )
 
+    # "---" entries render as a native <hr> divider (non-selectable, never
+    # returned as the chosen value) — grouping the 7 pages into three clusters:
+    # Analyze / Understand / Report.
     selected = option_menu(
         menu_title=None,
-        options=["Overview", "Detect Voice", "How It Works", "Model & Results",
-                 "Coverage", "Session Report", "About"],
-        icons=["grid-1x2", "soundwave", "diagram-3", "graph-up",
-               "shield-check", "clipboard-data", "info-circle"],
+        options=["Overview", "Detect Voice", "---",
+                 "How It Works", "Model & Results", "Coverage", "---",
+                 "Session Report", "About"],
+        icons=["grid-1x2", "soundwave", "",
+               "diagram-3", "graph-up", "shield-check", "",
+               "clipboard-data", "info-circle"],
         default_index=0,
         styles={
             # This component renders inside its OWN embedded iframe, with its own
@@ -1485,30 +1537,31 @@ with st.sidebar:
             "icon": {"color": C["accent"], "font-size": "14px"},
             "nav-link": {
                 "font-size": "13px", "text-align": "left", "margin": "2px 0",
-                "padding": "10px 12px", "border-radius": "8px", "color": C["muted"],
+                "padding": "10px 12px", "border-radius": "6px", "color": C["muted"],
                 "background-color": C["panel"], "--hover-color": C["panel2"],
             },
             "nav-link-selected": {
-                "background-color": C["accent"] + "26", "color": C["text"],
+                "background-color": C["panel2"], "color": C["text"],
                 "font-weight": "600", "border-left": f"2px solid {C['accent']}",
-                "border-radius": "8px",
+                "border-radius": "6px",
             },
+            "separator": {"background-color": C["border"], "margin": "8px 0"},
         },
     )
 
     st.markdown("---")
     st.markdown(
-        f"""<div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;
-             color:{C['muted']};letter-spacing:1.3px;text-transform:uppercase;
-             margin-bottom:10px;">System status</div>
-        <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;
+        f"""<div style="font-family:'IBM Plex Mono',monospace;font-size:{TYPE['xs']};
+             color:{C['muted']};letter-spacing:1px;text-transform:uppercase;
+             margin-bottom:{SPACE['3']};">System status</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:{TYPE['sm']};
              color:{C['muted']};line-height:2.1;">
           <div style="display:flex;justify-content:space-between;">
-            <span>COMPUTE</span><b style="color:{C['accent']}">{device.upper()}</b></div>
+            <span>COMPUTE</span><b style="color:{C['text']}">{device.upper()}</b></div>
           <div style="display:flex;justify-content:space-between;">
-            <span>MODELS</span><b style="color:{C['accent']}">{len(models)}</b></div>
+            <span>MODELS</span><b style="color:{C['text']}">{len(models)}</b></div>
           <div style="display:flex;justify-content:space-between;">
-            <span>ANALYSED</span><b style="color:{C['accent']}">{len(st.session_state.history)}</b></div>
+            <span>ANALYSED</span><b style="color:{C['text']}">{len(st.session_state.history)}</b></div>
         </div>""",
         unsafe_allow_html=True,
     )
