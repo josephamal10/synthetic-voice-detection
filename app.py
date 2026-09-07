@@ -1,3 +1,4 @@
+import itertools
 import os
 import tempfile
 import time
@@ -66,6 +67,12 @@ MODEL_NOTES = {
 }
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Fresh integer per gauge/sparkline render, so each gets its own uniquely
+# named CSS keyframes/classes — several can be on screen at once (a
+# multi-file upload analyses several clips in the same rerun) and must not
+# collide and animate each other to the wrong value.
+_uid_counter = itertools.count()
 
 # "Forensic console" palette — near-black navy with cobalt + periwinkle blue.
 # Deliberately no cyan/teal: a blue-to-cyan gradient is the single most common
@@ -445,6 +452,43 @@ def inject_css():
             to   {{ opacity: 1; transform: translateY(0); }}
         }}
         .hero {{ animation: riseIn .45s ease-out; }}
+
+        /* ---------- scan sweep while a clip is actually being analysed ---------- */
+        div[data-testid="stSpinner"] {{
+            position: relative; overflow: hidden;
+            background: {C['panel']}; border: 1px solid {C['accent']}40;
+            border-radius: 12px; padding: 14px 18px !important;
+        }}
+        div[data-testid="stSpinner"]::after {{
+            content: ""; position: absolute; top: 0; bottom: 0; width: 45%; left: -45%;
+            background: linear-gradient(90deg, transparent, {C['accent']}30, {C['accent']}70,
+                        {C['accent']}30, transparent);
+            animation: scanSweep 1.3s ease-in-out infinite;
+            pointer-events: none;
+        }}
+        @keyframes scanSweep {{
+            0%   {{ left: -45%; }}
+            100% {{ left: 100%; }}
+        }}
+
+        /* ---------- waveform / signal plots draw in when they appear ---------- */
+        div[data-testid="stExpanderDetails"] div[data-testid="stImage"] img {{
+            animation: imgReveal 1.1s cubic-bezier(.16,.84,.44,1);
+        }}
+        @keyframes imgReveal {{
+            from {{ clip-path: inset(0 100% 0 0); }}
+            to   {{ clip-path: inset(0 0 0 0); }}
+        }}
+
+        /* Reduced motion: every reveal above always sets its OWN correct
+           resting value outside the animation, so switching animation off
+           here can never leave a score, arc or sparkline stuck showing a
+           mid-reveal (i.e. wrong) value — only the motion itself is cut. */
+        @media (prefers-reduced-motion: reduce) {{
+            .anim-reveal {{ animation: none !important; }}
+            div[data-testid="stSpinner"]::after {{ display: none !important; }}
+            div[data-testid="stExpanderDetails"] div[data-testid="stImage"] img {{ animation: none !important; }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -634,8 +678,30 @@ def status_card_row(items, color):
         )
 
 
+def _flatten_markup(markup):
+    """Collapse a pretty-printed multi-line SVG/HTML string onto one line.
+
+    Streamlit's markdown renderer treats 4+ leading spaces as an indented
+    code block rather than HTML passthrough — harmless when the string is
+    the whole markdown call, but nesting one of these inside another
+    f-string (a sparkline inside a stat tile, say) can reintroduce that much
+    leading whitespace at the substitution point, and it silently renders as
+    literal text instead of the SVG. Flattening removes the risk regardless
+    of where the string ends up embedded.
+    """
+    return " ".join(s for line in markup.splitlines() if (s := line.strip()))
+
+
 def gauge_svg(p_genuine, label, threshold=DEFAULT_THRESHOLD):
-    """Semicircular gauge of the raw score, with the decision threshold marked."""
+    """Semicircular gauge of the raw score, with the decision threshold marked.
+
+    The colored arc draws itself in and the score counts up to its final
+    value — both plain CSS keyframe animations (no JS), matching how the
+    app's other motion (hero entrance, mic pulse) already works. Each gets
+    a uniquely-numbered class/keyframe name (`uid`) so multiple gauges
+    rendered in the same rerun — e.g. a multi-file upload — never fight
+    over the same animation.
+    """
     color = C["genuine"] if label == "Genuine" else C["synthetic"]
     r, cx, cy = 80, 100, 100
 
@@ -646,22 +712,86 @@ def gauge_svg(p_genuine, label, threshold=DEFAULT_THRESHOLD):
     x, y = point(p_genuine)
     tx1, ty1 = point(threshold, r - 13)
     tx2, ty2 = point(threshold, r + 13)
-    return f"""
+    arc_len = np.pi * r * p_genuine
+    score_int = round(p_genuine * 100)
+    uid = next(_uid_counter)
+
+    # A few stops on the way to the final score, so the number reads as
+    # counting up rather than appearing instantly. Plain keyframes swapping
+    # generated ::after content — no exotic CSS feature dependency, so it
+    # holds up in any browser that runs CSS animations at all. The resting
+    # (non-animated / reduced-motion) content is the real final score.
+    stops = [round(score_int * f) for f in (0.0, 0.32, 0.55, 0.74, 0.9, 1.0)]
+    count_frames = "\n".join(
+        f'{pct}% {{ content: "{v}%"; }}'
+        for pct, v in zip((0, 20, 40, 60, 80, 100), stops)
+    )
+
+    return _flatten_markup(f"""
     <svg viewBox="0 0 200 132" width="100%" style="max-width:270px">
       <path d="M 20 100 A {r} {r} 0 0 1 180 100" fill="none"
             stroke="{C['border']}" stroke-width="16" stroke-linecap="round"/>
       <path d="M 20 100 A {r} {r} 0 0 1 {x:.2f} {y:.2f}" fill="none"
-            stroke="{color}" stroke-width="16" stroke-linecap="round"/>
+            stroke="{color}" stroke-width="16" stroke-linecap="round"
+            class="anim-reveal" style="stroke-dasharray:{arc_len:.2f};stroke-dashoffset:0;
+            animation:gaugeArc{uid} .9s cubic-bezier(.16,.84,.44,1);"/>
       <line x1="{tx1:.2f}" y1="{ty1:.2f}" x2="{tx2:.2f}" y2="{ty2:.2f}"
             stroke="{C['text']}" stroke-width="2.5"/>
-      <text x="100" y="86" text-anchor="middle" fill="{color}"
-            font-size="29" font-weight="800">{p_genuine*100:.1f}%</text>
+      <foreignObject x="30" y="56" width="140" height="36">
+        <div xmlns="http://www.w3.org/1999/xhtml" class="gauge-score{uid} anim-reveal"
+             style="display:flex;align-items:center;justify-content:center;height:100%;
+             font-family:'JetBrains Mono',monospace;font-size:29px;font-weight:800;color:{color};"></div>
+      </foreignObject>
       <text x="100" y="105" text-anchor="middle" fill="{C['muted']}"
             font-size="10" letter-spacing="1.1">SCORE — LIKELIHOOD GENUINE</text>
       <text x="100" y="126" text-anchor="middle" fill="{C['muted']}"
             font-size="10">threshold {threshold:.2f} (marked)</text>
+      <style>
+        .gauge-score{uid}::after {{
+            content: "{score_int}%";
+            animation: gaugeCount{uid} .9s ease-out;
+        }}
+        @keyframes gaugeCount{uid} {{ {count_frames} }}
+        @keyframes gaugeArc{uid} {{ from {{ stroke-dashoffset:{arc_len:.2f}; }} to {{ stroke-dashoffset:0; }} }}
+      </style>
     </svg>
-    """
+    """)
+
+
+def sparkline_svg(values, color):
+    """Small inline trend line for a stat tile — real figures (e.g. a metric's
+    value across the four training rounds), not decoration. Draws itself in
+    the same self-drawing-arc style as the gauge, via stroke-dashoffset."""
+    w, h, pad = 120, 30, 4
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1
+    pts = []
+    for i, v in enumerate(values):
+        px = pad + i * (w - 2 * pad) / (len(values) - 1)
+        py = h - pad - (v - lo) / span * (h - 2 * pad)
+        pts.append((px, py))
+    line = "M" + " L".join(f"{px:.1f},{py:.1f}" for px, py in pts)
+    path_len = sum(
+        np.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1])
+        for i in range(len(pts) - 1)
+    ) or 1
+    lx, ly = pts[-1]
+    uid = next(_uid_counter)
+    return _flatten_markup(f"""
+    <svg viewBox="0 0 {w} {h}" width="100%" height="{h}" style="display:block;margin-top:6px;">
+      <path d="{line}" fill="none" stroke="{color}" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" class="anim-reveal"
+            style="stroke-dasharray:{path_len:.1f};stroke-dashoffset:0;
+            animation:spark{uid} 1s cubic-bezier(.16,.84,.44,1);"/>
+      <circle cx="{lx:.1f}" cy="{ly:.1f}" r="2.6" fill="{color}" class="anim-reveal"
+              style="opacity:1;animation:sparkdot{uid} .3s ease;animation-delay:.85s;
+              animation-fill-mode:backwards;"/>
+      <style>
+        @keyframes spark{uid} {{ from {{ stroke-dashoffset:{path_len:.1f}; }} to {{ stroke-dashoffset:0; }} }}
+        @keyframes sparkdot{uid} {{ from {{ opacity:0; }} to {{ opacity:1; }} }}
+      </style>
+    </svg>
+    """)
 
 
 def plot_analysis(y, sr, title):
@@ -1159,15 +1289,37 @@ def page_model(models):
          "How the detector was trained, what it scores, and the real-world generalisation problem "
          "that shaped the current version.")
 
+    # Worst→best order the four training rounds actually happened in — reused
+    # below for the comparison table too, so both sections read the same story.
+    order = [BASELINE_MODEL, FINETUNED_MODEL, COMBINED_MODEL, COMBINED_V2_MODEL]
+
     st.markdown("### Final model — measured on both domains")
     fin = MODEL_SCORES[COMBINED_V2_MODEL]
-    stat_row([(f"{fin['asv'][0]*100:.1f}%", "Studio accuracy"),
-              (f"{fin['itw'][0]*100:.1f}%", "Real-world accuracy"),
-              (f"{fin['asv'][2]*100:.1f}%", "Studio precision"),
-              (f"{fin['itw'][2]*100:.1f}%", "Real-world precision")])
+    tiles = [
+        ("Studio accuracy", f"{fin['asv'][0]*100:.1f}%",
+         [MODEL_SCORES[m]["asv"][0] * 100 for m in order]),
+        ("Real-world accuracy", f"{fin['itw'][0]*100:.1f}%",
+         [MODEL_SCORES[m]["itw"][0] * 100 for m in order]),
+        ("Studio precision", f"{fin['asv'][2]*100:.1f}%",
+         [MODEL_SCORES[m]["asv"][2] * 100 for m in order]),
+        ("Real-world precision", f"{fin['itw'][2]*100:.1f}%",
+         [MODEL_SCORES[m]["itw"][2] * 100 for m in order]),
+    ]
+    cols = st.columns(len(tiles))
+    for col, (label, value, series) in zip(cols, tiles):
+        col.markdown(
+            f"""<div class="stat">
+                  <div class="v">{value}</div>
+                  <div class="k">{label}</div>
+                  {sparkline_svg(series, C['accent'])}
+                </div>""",
+            unsafe_allow_html=True,
+        )
     st.caption("Combined + classical-TTS model, evaluated on ASVspoof 2019 LA dev (24,844 studio "
                "clips) and In-the-Wild validation (6,355 real-world clips). EER not yet computed "
-               "for this model — the figures below are for the three earlier versions.")
+               "for this model — the figures below are for the three earlier versions. Each sparkline "
+               "traces that metric across all four training rounds (baseline → fine-tuned → combined → "
+               "combined+TTS).")
 
     st.markdown("### Four-stage comparison")
     st.caption("Every model evaluated on both held-out test sets. Bona-fide = genuine human voice.")
@@ -1175,7 +1327,6 @@ def page_model(models):
     def _fmt(triple):
         return f"{triple[0]*100:.1f}% / {triple[1]*100:.1f}% / {triple[2]*100:.1f}%"
 
-    order = [BASELINE_MODEL, FINETUNED_MODEL, COMBINED_MODEL, COMBINED_V2_MODEL]
     st.table({
         "Model": ["1 · Baseline (ASVspoof only)",
                   "2 · Fine-tuned (In-the-Wild only)",
