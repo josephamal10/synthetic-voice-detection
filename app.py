@@ -79,7 +79,7 @@ _uid_counter = itertools.count()
 # "AI product" look, and cyan was flagged twice as reading generically because
 # of it. Two distinct blues instead (no shared hue with teal) reads as a
 # considered choice rather than a template.
-C = {
+C_DARK = {
     "bg": "#040814",
     "panel": "#0a1220",
     "panel2": "#101d33",
@@ -92,6 +92,29 @@ C = {
     "synthetic": "#ff3d5a",
     "warn": "#ffb020",
 }
+
+# Same roles, re-tuned for a light ground — deeper/more saturated where the
+# dark palette could afford to be soft (accent, genuine, synthetic all need
+# more contrast against paper than against near-black).
+C_LIGHT = {
+    "bg": "#f6f1e9",
+    "panel": "#ffffff",
+    "panel2": "#efe6d4",
+    "border": "#ddceb4",
+    "text": "#1d180f",
+    "muted": "#6e604a",
+    "accent": "#0044dd",
+    "accent2": "#3f5fcf",
+    "genuine": "#0f8a52",
+    "synthetic": "#c22a44",
+    "warn": "#a35d00",
+}
+
+# The active palette every function below reads via C['key'] — swapped in
+# place (not reassigned) at the top of each rerun based on the sidebar's
+# dark/light toggle, so every function that already does C['...'] picks up
+# the current theme automatically with no other code needing to change.
+C = dict(C_DARK)
 
 
 # ============================================================
@@ -217,14 +240,25 @@ def inject_css():
         .material-icons, [class*="material-symbols"] {{
             font-family: 'Material Symbols Rounded', 'Material Icons' !important;
         }}
+        /* A very slow drift on where the corner glow sits — 28s, meant to be
+           almost impossible to catch in the act, so the background reads as
+           alive rather than static without ever competing for attention. */
+        @property --dx {{ syntax: '<percentage>'; inherits: true; initial-value: 12%; }}
+        @property --dy {{ syntax: '<percentage>'; inherits: true; initial-value: -8%; }}
+        @keyframes bgDrift {{
+            0%   {{ --dx: 12%; --dy: -8%; }}
+            50%  {{ --dx: 82%; --dy: 10%; }}
+            100% {{ --dx: 12%; --dy: -8%; }}
+        }}
         .stApp {{
             background:
-                radial-gradient(1000px 520px at 12% -8%, {C['accent']}12 0%, transparent 58%),
+                radial-gradient(1000px 520px at var(--dx, 12%) var(--dy, -8%), {C['accent']}12 0%, transparent 58%),
                 radial-gradient(760px 420px at 92% -4%, {C['accent2']}0e 0%, transparent 52%),
                 repeating-linear-gradient(0deg, {C['accent']}05 0 1px, transparent 1px 44px),
                 repeating-linear-gradient(90deg, {C['accent']}05 0 1px, transparent 1px 44px),
                 {C['bg']};
             color: {C['text']};
+            animation: bgDrift 28s ease-in-out infinite;
         }}
         section[data-testid="stSidebar"] {{
             background: linear-gradient(180deg, {C['panel2']} 0%, {C['bg']} 100%);
@@ -289,6 +323,20 @@ def inject_css():
             border: 1px solid {C['accent']}3a; margin-bottom: 16px;
             position: relative; z-index: 1;
         }}
+        /* A functional "you are here" signifier next to the pill — not
+           decoration. (The sidebar's own current-page highlight lives inside
+           a third-party component's iframe, which this app's CSS can't
+           reach, so the signal lives here instead.) */
+        .live-dot {{
+            display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+            background: {C['genuine']}; margin-left: 9px; margin-bottom: 16px;
+            vertical-align: middle; position: relative; z-index: 1;
+            animation: liveBreathe 2.6s ease-in-out infinite;
+        }}
+        @keyframes liveBreathe {{
+            0%, 100% {{ opacity: .5; box-shadow: 0 0 0 0 {C['genuine']}00; }}
+            50%      {{ opacity: 1;  box-shadow: 0 0 9px 2px {C['genuine']}80; }}
+        }}
 
         /* ---------- cards ---------- */
         .card {{
@@ -303,8 +351,17 @@ def inject_css():
             background: linear-gradient(180deg, {C['accent']}, transparent);
             opacity: .6;
         }}
+        /* Cursor-tracked spotlight — the JS (inject_micro_interactions) only
+           ever sets --mx/--my and toggles this class; the glow itself, and
+           its fade in/out, are plain CSS. */
+        .card:after {{
+            content: ""; position: absolute; inset: -1px; pointer-events: none; opacity: 0;
+            background: radial-gradient(240px circle at var(--mx, 50%) var(--my, 50%),
+                        {C['accent']}30, transparent 62%);
+            transition: opacity .25s ease;
+        }}
+        .card.spotlit:after {{ opacity: 1; }}
         .card:hover {{
-            transform: translateY(-3px);
             border-color: {C['accent']}44;
             box-shadow: 0 14px 34px -18px {C['accent']}66;
         }}
@@ -430,6 +487,7 @@ def inject_css():
 
         /* ---------- buttons ---------- */
         div[data-testid="stButton"] button {{
+            position: relative; overflow: hidden;
             border-radius: 10px !important; font-weight: 600 !important;
             border: 1px solid {C['border']} !important;
             transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
@@ -438,12 +496,50 @@ def inject_css():
             transform: translateY(-1px); border-color: {C['accent']}80 !important;
             box-shadow: 0 8px 20px -10px {C['accent']}70;
         }}
+        div[data-testid="stButton"] button:active {{ transform: translateY(0) scale(.97); }}
+        div[data-testid="stButton"] button:focus-visible {{
+            outline: 2px solid {C['accent']} !important; outline-offset: 2px;
+        }}
         div[data-testid="stButton"] button[kind="primary"] {{
             background: linear-gradient(135deg, {C['accent']}, {C['accent2']}) !important;
             border: none !important; color: {C['bg']} !important;
         }}
         div[data-testid="stButton"] button[kind="primary"]:hover {{
             box-shadow: 0 10px 26px -10px {C['accent']}90;
+        }}
+        /* Click-position ripple — inject_micro_interactions() adds the .vg-ripple
+           span at the click point on primary buttons; this is just its look. */
+        .vg-ripple {{
+            position: absolute; border-radius: 50%; background: rgba(255,255,255,.35);
+            transform: scale(0); pointer-events: none;
+            animation: vgRippleAnim .6s ease-out forwards;
+        }}
+        @keyframes vgRippleAnim {{ to {{ transform: scale(1); opacity: 0; }} }}
+
+        /* ---------- skeleton shimmer (model loading) ---------- */
+        .skeleton-card {{
+            background: {C['panel']}; border: 1px solid {C['border']};
+            border-radius: 14px; padding: 14px 18px; margin: 2px 0 12px 0;
+        }}
+        .skel-line, .skel-block {{
+            background: linear-gradient(90deg, {C['panel2']} 25%, {C['border']} 37%, {C['panel2']} 63%);
+            background-size: 400% 100%;
+            animation: skelShimmer 1.6s ease-in-out infinite;
+            border-radius: 4px;
+        }}
+        .skel-line {{ height: 12px; margin-bottom: 10px; }}
+        .skel-block {{ height: 40px; }}
+        @keyframes skelShimmer {{ 0% {{ background-position: 100% 0; }} 100% {{ background-position: 0 0; }} }}
+
+        /* ---------- alerts announce themselves ---------- */
+        div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]) {{
+            animation: alertShake .4s ease-out;
+        }}
+        @keyframes alertShake {{
+            10%, 90% {{ transform: translateX(-1px); }}
+            20%, 80% {{ transform: translateX(2px); }}
+            30%, 50%, 70% {{ transform: translateX(-3px); }}
+            40%, 60% {{ transform: translateX(3px); }}
         }}
 
         /* ---------- gentle entrance for each page's hero ---------- */
@@ -488,6 +584,13 @@ def inject_css():
             .anim-reveal {{ animation: none !important; }}
             div[data-testid="stSpinner"]::after {{ display: none !important; }}
             div[data-testid="stExpanderDetails"] div[data-testid="stImage"] img {{ animation: none !important; }}
+            .stApp {{ animation: none !important; }}
+            .card {{ transform: none !important; }}
+            .card:after {{ display: none !important; }}
+            .vg-ripple {{ display: none !important; }}
+            div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]) {{ animation: none !important; }}
+            .live-dot {{ animation: none !important; opacity: 1; }}
+            .skel-line, .skel-block {{ animation: none !important; }}
         }}
         </style>
         """,
@@ -620,6 +723,77 @@ def inject_particles():
     )
 
 
+def inject_micro_interactions():
+    """Cursor-tracked spotlight + tilt on `.card` hover, and a click-position
+    ripple on primary buttons.
+
+    Event-driven only — a mousemove/click listener, no continuous animation
+    loop — which is a lighter, simpler ask of the same same-origin-iframe
+    mechanism inject_particles() already uses, just scoped to individual
+    cards/buttons on hover/click rather than the whole page. Guarded so a
+    Streamlit rerun re-executing this never binds a second copy of the
+    listeners, and skips the tilt/spotlight entirely under reduced motion.
+    """
+    components.html(
+        """
+        <script>
+        (function () {
+          try {
+            const doc = window.parent.document;
+            if (doc.__vgMicroBound) return;
+            doc.__vgMicroBound = true;
+
+            const reduced = window.parent.matchMedia
+              && window.parent.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+            let lastCard = null;
+            doc.addEventListener('mousemove', function (e) {
+              const card = e.target.closest && e.target.closest('.card');
+              if (card !== lastCard) {
+                if (lastCard) {
+                  lastCard.classList.remove('spotlit');
+                  lastCard.style.transform = '';
+                }
+                lastCard = card;
+                if (card) card.classList.add('spotlit');
+              }
+              if (card) {
+                const r = card.getBoundingClientRect();
+                const px = (e.clientX - r.left) / r.width;
+                const py = (e.clientY - r.top) / r.height;
+                card.style.setProperty('--mx', (px * 100).toFixed(1) + '%');
+                card.style.setProperty('--my', (py * 100).toFixed(1) + '%');
+                if (!reduced) {
+                  const ry = (px - 0.5) * 6;
+                  const rx = (0.5 - py) * 6;
+                  card.style.transform =
+                    'perspective(700px) rotateX(' + rx.toFixed(2) + 'deg) rotateY(' + ry.toFixed(2) + 'deg)';
+                }
+              }
+            });
+
+            doc.addEventListener('click', function (e) {
+              const btn = e.target.closest
+                && e.target.closest('div[data-testid="stButton"] button[kind="primary"]');
+              if (!btn) return;
+              const r = btn.getBoundingClientRect();
+              const size = Math.max(r.width, r.height) * 1.6;
+              const span = doc.createElement('span');
+              span.className = 'vg-ripple';
+              span.style.width = span.style.height = size + 'px';
+              span.style.left = (e.clientX - r.left - size / 2) + 'px';
+              span.style.top = (e.clientY - r.top - size / 2) + 'px';
+              btn.appendChild(span);
+              span.addEventListener('animationend', function () { span.remove(); });
+            });
+          } catch (e) { /* decoration only — never break the app */ }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 # Staggered delays and durations so the equaliser bars never move in lockstep.
 _EQ_BARS = "".join(
     f'<i style="animation-delay:{d}s;animation-duration:{s}s"></i>'
@@ -632,7 +806,7 @@ _EQ_BARS = "".join(
 def hero(pill, title, subtitle):
     st.markdown(
         f"""<div class="hero">
-        <span class="pill">{pill}</span>
+        <span class="pill">{pill}</span><span class="live-dot" title="You are here" aria-hidden="true"></span>
         <h1>{title}</h1><p>{subtitle}</p>
         <div class="eq">{_EQ_BARS}</div>
         </div>""",
@@ -791,6 +965,47 @@ def sparkline_svg(values, color):
         @keyframes sparkdot{uid} {{ from {{ opacity:0; }} to {{ opacity:1; }} }}
       </style>
     </svg>
+    """)
+
+
+def upload_icon_svg():
+    """Line-art upload glyph — replaces an emoji in the capture-prompt icon,
+    same idea as the sparkline/gauge: a real icon rather than a placeholder
+    character. A function (not a constant) so it re-reads the current
+    theme's accent each time, not whichever theme was active at import."""
+    return _flatten_markup(f"""
+    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="{C['accent']}"
+         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v10"/>
+      <path d="M8 7l4-4 4 4"/>
+      <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+    </svg>
+    """)
+
+
+def mic_icon_svg():
+    """Line-art microphone glyph — same rationale as upload_icon_svg()."""
+    return _flatten_markup(f"""
+    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="{C['accent']}"
+         stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3"/>
+      <path d="M5 11a7 7 0 0 0 14 0"/>
+      <path d="M12 18v3"/>
+      <path d="M9 21h6"/>
+    </svg>
+    """)
+
+
+def skeleton_card_html():
+    """Shimmering placeholder shown for the moment a model is actually
+    loading — a shape for that gap instead of blank space or the default
+    spinner, reusing the app's own card look."""
+    return _flatten_markup("""
+    <div class="skeleton-card">
+      <div class="skel-line" style="width:70%;"></div>
+      <div class="skel-line" style="width:45%;"></div>
+      <div class="skel-block"></div>
+    </div>
     """)
 
 
@@ -1044,7 +1259,13 @@ def page_detect(models):
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         details = st.checkbox("Show signal analysis", value=True)
 
+    # load_model() is @st.cache_resource — instant on every switch back to an
+    # already-loaded model, and genuinely brief even on a cold load. The
+    # skeleton still gives that first moment a shape instead of a blank gap.
+    model_slot = st.empty()
+    model_slot.markdown(skeleton_card_html(), unsafe_allow_html=True)
     model = load_model(models[chosen])
+    model_slot.empty()
     chosen_path = models[chosen]
 
     note = MODEL_NOTES.get(chosen_path)
@@ -1148,7 +1369,7 @@ def page_detect(models):
         if mode == "Upload Audio":
             st.markdown(
                 f"""<div class="io-caption">
-                  <div class="upload-glyph">📤</div>
+                  <div class="upload-glyph">{upload_icon_svg()}</div>
                   <div class="t">Drop a clip to analyse</div>
                   <div class="s">WAV · MP3 · FLAC — multiple files supported</div>
                 </div>""",
@@ -1167,7 +1388,7 @@ def page_detect(models):
             pending = st.session_state.pending_recording
             st.markdown(
                 f"""<div class="io-caption">
-                  <div class="mic-orb">🎙️</div>
+                  <div class="mic-orb">{mic_icon_svg()}</div>
                   <div class="t">{"Speak, then stop — you'll get to hear it back first" if not pending else "Happy with the take?"}</div>
                   <div class="s">5-10 seconds works best</div>
                 </div>""",
@@ -1586,8 +1807,18 @@ def page_about():
 # APP
 # ============================================================
 st.set_page_config(page_title="Synthetic Voice Detection", page_icon="🎙️", layout="wide")
+
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = True
+# Swap the shared palette dict IN PLACE (not reassigned) before anything
+# below reads C['...'] — every function already does that lookup at call
+# time, so this one line is the whole theme switch; nothing else changes.
+C.clear()
+C.update(C_DARK if st.session_state.dark_mode else C_LIGHT)
+
 inject_css()
 inject_particles()
+inject_micro_interactions()
 
 if "history" not in st.session_state:
     st.session_state.history = []
@@ -1663,6 +1894,11 @@ with st.sidebar:
         </div>""",
         unsafe_allow_html=True,
     )
+
+    dark_mode = st.toggle("Dark mode", value=st.session_state.dark_mode, key="dark_mode_toggle")
+    if dark_mode != st.session_state.dark_mode:
+        st.session_state.dark_mode = dark_mode
+        st.rerun()
 
 if selected == "Overview":
     page_overview(models)
