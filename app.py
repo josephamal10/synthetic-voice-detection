@@ -74,40 +74,40 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # collide and animate each other to the wrong value.
 _uid_counter = itertools.count()
 
-# "Forensic console" palette — near-black navy with cobalt + periwinkle blue.
-# Deliberately no cyan/teal: a blue-to-cyan gradient is the single most common
-# "AI product" look, and cyan was flagged twice as reading generically because
-# of it. Two distinct blues instead (no shared hue with teal) reads as a
-# considered choice rather than a template.
+# "Cyan-Slate Lab" — a cool, deep teal-cyan instrument palette. Picked over a
+# blue-to-cyan-gradient "AI product" look and over the original cobalt/
+# periwinkle palette after a round of side-by-side comparisons; reads as a
+# clean clinical lab/security tool rather than a generic AI demo.
 C_DARK = {
-    "bg": "#040814",
-    "panel": "#0a1220",
-    "panel2": "#101d33",
-    "border": "#1c2c4a",
-    "text": "#eef3ff",
-    "muted": "#8695b8",
-    "accent": "#0052ff",
-    "accent2": "#7c96ff",
-    "genuine": "#00e58a",
-    "synthetic": "#ff3d5a",
-    "warn": "#ffb020",
+    "bg": "#0a1418",
+    "panel": "#0f1e24",
+    "panel2": "#142832",
+    "border": "#1c333c",
+    "text": "#eef6f8",
+    "muted": "#82a3ac",
+    "accent": "#14b8a6",
+    "accent2": "#5eead4",
+    "genuine": "#1fae7a",
+    "synthetic": "#e2584f",
+    "warn": "#d99a3d",
 }
 
-# Same roles, re-tuned for a light ground — deeper/more saturated where the
-# dark palette could afford to be soft (accent, genuine, synthetic all need
-# more contrast against paper than against near-black).
+# Same instrument, same spirit, inverted to a bright ground — crisp
+# white-cyan panels, deep teal-black ink text. Accent/genuine/synthetic/warn
+# are all deepened a notch from their dark-mode values for contrast against
+# white rather than near-black.
 C_LIGHT = {
-    "bg": "#f6f1e9",
+    "bg": "#f2f9fa",
     "panel": "#ffffff",
-    "panel2": "#efe6d4",
-    "border": "#ddceb4",
-    "text": "#1d180f",
-    "muted": "#6e604a",
-    "accent": "#0044dd",
-    "accent2": "#3f5fcf",
-    "genuine": "#0f8a52",
-    "synthetic": "#c22a44",
-    "warn": "#a35d00",
+    "panel2": "#e3f2f1",
+    "border": "#cfe3e1",
+    "text": "#0d2b2b",
+    "muted": "#5b7d7a",
+    "accent": "#0f8a7a",
+    "accent2": "#0d9488",
+    "genuine": "#178f63",
+    "synthetic": "#c23f37",
+    "warn": "#a8672a",
 }
 
 # The active palette every function below reads via C['key'] — swapped in
