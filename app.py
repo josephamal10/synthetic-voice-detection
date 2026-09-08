@@ -828,12 +828,27 @@ def inject_micro_interactions():
 
 def scroll_to_top():
     """Reset scroll position — called only on the rerun where the sidebar
-    selection actually changes (see the page-routing call site), never on
-    every rerun, so moving a slider on the *same* page never yanks the
-    view back up. Streamlit reuses the same scrollable container across
-    reruns rather than giving each page its own, so without this a page
-    that was scrolled down stays scrolled down when you switch to a
-    completely different page."""
+    selection actually changed, and only after that page's own content has
+    been added to the script (see the call site after the footer), never on
+    every rerun, so moving a slider on the *same* page never yanks the view
+    back up. Streamlit reuses the same scrollable container across reruns
+    rather than giving each page its own, so without this a page that was
+    scrolled down stays scrolled down when you switch to a different one.
+
+    Keeps re-asserting scroll=0 for a short window afterward, not just once:
+    even after this page's content is in the DOM, the document's height
+    keeps changing slightly later, from things a MutationObserver can't see
+    — an <img> finishing an async load doesn't mutate the DOM, only its
+    rendered size — and the browser's own scroll anchoring quietly
+    re-adjusts scroll position to compensate. Measured live, scroll actually
+    drifted to over 1000px around 250ms after a page switch before settling
+    back to 0 on its own. A polling loop catches that regardless of what
+    caused it and stops after ~1.5s so it never fights a real scroll the
+    user makes on the page afterward — setInterval, not
+    requestAnimationFrame: this script runs inside a zero-height iframe,
+    where rAF is throttled or suspended entirely (same reason
+    inject_particles() below uses a timer instead of rAF).
+    """
     components.html(
         """
         <script>
@@ -843,9 +858,21 @@ def scroll_to_top():
             const main = doc.querySelector('section.stMain')
               || doc.querySelector('[data-testid="stAppViewContainer"]')
               || doc.querySelector('.main');
-            if (main) main.scrollTo({ top: 0, left: 0, behavior: 'instant' });
-            doc.documentElement.scrollTo(0, 0);
-            doc.body.scrollTo(0, 0);
+
+            function resetScroll() {
+              try {
+                if (main) main.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+                doc.documentElement.scrollTo(0, 0);
+                doc.body.scrollTo(0, 0);
+              } catch (e) { /* best-effort only — never break the app */ }
+            }
+
+            resetScroll();
+            const start = Date.now();
+            const timer = setInterval(() => {
+              if (main && main.scrollTop !== 0) resetScroll();
+              if (Date.now() - start > 1500) clearInterval(timer);
+            }, 10);
           } catch (e) { /* best-effort only — never break the app */ }
         })();
         </script>
@@ -1986,11 +2013,15 @@ with st.sidebar:
 
 # Only reset scroll when the page actually changed — not on every rerun,
 # or moving the threshold slider etc. would keep yanking the view to the top.
+# Checked here (before the page renders) so the flag update itself doesn't
+# depend on page content, but the actual scroll_to_top() call happens only
+# after that page has fully rendered (see below the footer) — resetting
+# scroll before the new content exists lets the browser's scroll-anchoring
+# quietly pull it back down as that content streams in afterward.
 if "last_page" not in st.session_state:
     st.session_state.last_page = selected
-if st.session_state.last_page != selected:
-    st.session_state.last_page = selected
-    scroll_to_top()
+page_changed = st.session_state.last_page != selected
+st.session_state.last_page = selected
 
 if selected == "Overview":
     page_overview(models)
@@ -2014,3 +2045,6 @@ st.markdown(
     </div>""",
     unsafe_allow_html=True,
 )
+
+if page_changed:
+    scroll_to_top()
