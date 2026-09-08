@@ -542,6 +542,27 @@ def inject_css():
         .skel-block {{ height: 40px; }}
         @keyframes skelShimmer {{ 0% {{ background-position: 100% 0; }} 100% {{ background-position: 0 0; }} }}
 
+        /* ---------- theme toggle switch ---------- */
+        /* Streamlit's own default (light) widget theme is used for native
+           controls since there's no .streamlit/config.toml — normally close
+           enough against a dark custom background, but a light-on-light
+           switch track became nearly invisible once the light palette made
+           the page background light too. Driven by our own tokens instead,
+           scoped to this one control via its aria-label (not a hashed
+           st-emotion-cache class, which isn't stable across versions). */
+        label:has(input[aria-label="Dark mode"]) > div:first-of-type {{
+            background: {C['border']} !important; border: 1px solid {C['border']} !important;
+        }}
+        label:has(input[aria-label="Dark mode"]):has(input:checked) > div:first-of-type {{
+            background: {C['accent']} !important; border-color: {C['accent']} !important;
+        }}
+        label:has(input[aria-label="Dark mode"]) > div:first-of-type > div {{
+            background: {C['text']} !important;
+        }}
+        label:has(input[aria-label="Dark mode"]) [data-testid="stWidgetLabel"] p {{
+            color: {C['text']} !important;
+        }}
+
         /* ---------- alerts announce themselves ---------- */
         div[data-testid="stAlert"]:has([data-testid="stAlertContentError"]) {{
             animation: alertShake .4s ease-out;
@@ -1417,11 +1438,33 @@ def page_detect(models):
             files = st.file_uploader("Audio files", type=["wav", "mp3", "flac"],
                                      accept_multiple_files=True, label_visibility="collapsed")
             if files:
+                # A fresh file (or set of files) always needs a fresh explicit
+                # analyse click — same gate the recording flow already has.
+                # Re-running analyse() on every later rerun (e.g. moving the
+                # threshold slider) is still fine and intended, since that's
+                # not a new upload.
+                file_sig = tuple((f.name, f.size) for f in files)
+                if st.session_state.upload_sig != file_sig:
+                    st.session_state.upload_sig = file_sig
+                    st.session_state.upload_analysed = False
+
                 for f in files:
                     st.divider()
                     st.markdown(f"#### 📄 {f.name}")
-                    analyse(model, chosen, f.name, f.getvalue(), details, threshold)
+                    st.audio(f.getvalue())
+
+                st.divider()
+                if st.button("🔍  Analyze Voice", use_container_width=True, type="primary"):
+                    st.session_state.upload_analysed = True
+
+                if st.session_state.upload_analysed:
+                    for f in files:
+                        st.divider()
+                        st.markdown(f"#### Result — {f.name}")
+                        analyse(model, chosen, f.name, f.getvalue(), details, threshold,
+                                show_playback=False)
             else:
+                st.session_state.upload_analysed = False
                 st.info("Upload one or more clips to analyse them.")
         else:
             pending = st.session_state.pending_recording
@@ -1871,6 +1914,10 @@ if "recording_analysed" not in st.session_state:
     st.session_state.recording_analysed = False
 if "rec_nonce" not in st.session_state:
     st.session_state.rec_nonce = 0
+if "upload_sig" not in st.session_state:
+    st.session_state.upload_sig = None
+if "upload_analysed" not in st.session_state:
+    st.session_state.upload_analysed = False
 
 models = available_models()
 
