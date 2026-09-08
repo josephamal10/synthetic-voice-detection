@@ -299,6 +299,17 @@ def inject_css():
             -webkit-background-clip: text; -webkit-text-fill-color: transparent;
             position: relative; z-index: 1;
         }}
+        /* Sidebar logo — same gradient-text-clip trick as .hero h1 above.
+           Must live in this stylesheet, not an inline style="" attribute:
+           Streamlit's HTML sanitizer silently drops -webkit-background-clip
+           from inline styles (it kept -webkit-text-fill-color, oddly), which
+           left the logo rendering as a solid filled block with no visible
+           letters at all. */
+        .brand-title {{
+            font-size: 21px; font-weight: 700; letter-spacing: -.4px;
+            background: linear-gradient(90deg, {C['accent']}, {C['accent2']});
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }}
         .hero p {{
             color: {C['muted']}; margin-top: 10px; font-size: 15px; max-width: 660px;
             line-height: 1.6; position: relative; z-index: 1;
@@ -787,6 +798,34 @@ def inject_micro_interactions():
               span.addEventListener('animationend', function () { span.remove(); });
             });
           } catch (e) { /* decoration only — never break the app */ }
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
+def scroll_to_top():
+    """Reset scroll position — called only on the rerun where the sidebar
+    selection actually changes (see the page-routing call site), never on
+    every rerun, so moving a slider on the *same* page never yanks the
+    view back up. Streamlit reuses the same scrollable container across
+    reruns rather than giving each page its own, so without this a page
+    that was scrolled down stays scrolled down when you switch to a
+    completely different page."""
+    components.html(
+        """
+        <script>
+        (function () {
+          try {
+            const doc = window.parent.document;
+            const main = doc.querySelector('section.stMain')
+              || doc.querySelector('[data-testid="stAppViewContainer"]')
+              || doc.querySelector('.main');
+            if (main) main.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+            doc.documentElement.scrollTo(0, 0);
+            doc.body.scrollTo(0, 0);
+          } catch (e) { /* best-effort only — never break the app */ }
         })();
         </script>
         """,
@@ -1841,9 +1880,7 @@ with st.sidebar:
           <div style="display:flex;align-items:center;gap:9px;">
             <div style="width:9px;height:9px;border-radius:50%;background:{C['genuine']};
                  box-shadow:0 0 12px {C['genuine']};"></div>
-            <div style="font-size:21px;font-weight:700;letter-spacing:-.4px;
-                 background:linear-gradient(90deg,{C['accent']},{C['accent2']});
-                 -webkit-background-clip:text;-webkit-text-fill-color:transparent;">VoiceGuard</div>
+            <div class="brand-title">VoiceGuard</div>
           </div>
           <div style="color:{C['muted']};font-family:'JetBrains Mono',monospace;
                font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;margin-top:5px;">
@@ -1899,6 +1936,14 @@ with st.sidebar:
     if dark_mode != st.session_state.dark_mode:
         st.session_state.dark_mode = dark_mode
         st.rerun()
+
+# Only reset scroll when the page actually changed — not on every rerun,
+# or moving the threshold slider etc. would keep yanking the view to the top.
+if "last_page" not in st.session_state:
+    st.session_state.last_page = selected
+if st.session_state.last_page != selected:
+    st.session_state.last_page = selected
+    scroll_to_top()
 
 if selected == "Overview":
     page_overview(models)
