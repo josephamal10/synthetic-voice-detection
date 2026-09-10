@@ -41,7 +41,7 @@ MODEL_SCORES = {
     COMBINED_MODEL: {"asv": (0.974, 0.779, 0.963), "itw": (0.965, 0.984, 0.962),
                      "eer": (0.0847, 0.0356)},
     COMBINED_V2_MODEL: {"asv": (0.976, 0.815, 0.942), "itw": (0.961, 0.957, 0.981),
-                        "eer": None},
+                        "eer": (0.0833, 0.0360)},
 }
 
 # Score at which false acceptances and false rejections are equal, on ASVspoof dev.
@@ -50,6 +50,7 @@ EER_THRESHOLDS = {
     BASELINE_MODEL: 0.0074,
     FINETUNED_MODEL: 0.8572,
     COMBINED_MODEL: 0.0042,
+    COMBINED_V2_MODEL: 0.0095,
 }
 
 MODEL_NOTES = {
@@ -1622,6 +1623,12 @@ def page_model(models):
     # Worst→best order the four training rounds actually happened in — reused
     # below for the comparison table too, so both sections read the same story.
     order = [BASELINE_MODEL, FINETUNED_MODEL, COMBINED_MODEL, COMBINED_V2_MODEL]
+    stage_labels = {
+        BASELINE_MODEL: "1 · Baseline (ASVspoof only)",
+        FINETUNED_MODEL: "2 · Fine-tuned (In-the-Wild only)",
+        COMBINED_MODEL: "3 · Combined (both datasets)",
+        COMBINED_V2_MODEL: "4 · Combined + classical TTS",
+    }
 
     st.markdown("### Final model — measured on both domains")
     fin = MODEL_SCORES[COMBINED_V2_MODEL]
@@ -1646,9 +1653,8 @@ def page_model(models):
             unsafe_allow_html=True,
         )
     st.caption("Combined + classical-TTS model, evaluated on ASVspoof 2019 LA dev (24,844 studio "
-               "clips) and In-the-Wild validation (6,355 real-world clips). EER not yet computed "
-               "for this model — the figures below are for the three earlier versions. Each sparkline "
-               "traces that metric across all four training rounds (baseline → fine-tuned → combined → "
+               "clips) and In-the-Wild validation (6,355 real-world clips). Each sparkline traces "
+               "that metric across all four training rounds (baseline → fine-tuned → combined → "
                "combined+TTS).")
 
     st.markdown("### Four-stage comparison")
@@ -1658,23 +1664,18 @@ def page_model(models):
         return f"{triple[0]*100:.1f}% / {triple[1]*100:.1f}% / {triple[2]*100:.1f}%"
 
     st.table({
-        "Model": ["1 · Baseline (ASVspoof only)",
-                  "2 · Fine-tuned (In-the-Wild only)",
-                  "3 · Combined (both datasets)",
-                  "4 · Combined + classical TTS"],
+        "Model": [stage_labels[m] for m in order],
         "Studio — acc / recall / precision": [_fmt(MODEL_SCORES[m]["asv"]) for m in order],
         "Real-world — acc / recall / precision": [_fmt(MODEL_SCORES[m]["itw"]) for m in order],
     })
 
     st.markdown("### Equal Error Rate")
     st.caption("EER is threshold-independent: the rate at which false acceptances and false "
-               "rejections are equal. Lower is better; 50% would be random guessing. Not yet "
-               "computed for model 4 — added here once that pass is run.")
+               "rejections are equal. Lower is better; 50% would be random guessing. Measured "
+               "for all four models.")
     eer_order = [m for m in order if MODEL_SCORES[m].get("eer")]
     st.table({
-        "Model": ["1 · Baseline (ASVspoof only)",
-                  "2 · Fine-tuned (In-the-Wild only)",
-                  "3 · Combined (both datasets)"][:len(eer_order)],
+        "Model": [stage_labels[m] for m in eer_order],
         "ASVspoof EER": [f"{MODEL_SCORES[m]['eer'][0]*100:.2f}%" for m in eer_order],
         "In-the-Wild EER": [f"{MODEL_SCORES[m]['eer'][1]*100:.2f}%" for m in eer_order],
     })
@@ -1683,7 +1684,9 @@ def page_model(models):
         is close to the 50% of random guessing — on everyday recordings it could not separate genuine
         from cloned speech at <i>any</i> threshold, so retraining was necessary rather than optional.
         Joint training cost 2.64 points of ASVspoof EER (5.83% → 8.47%) and returned 37.96 points of
-        real-world EER (41.52% → 3.56%), roughly a twelvefold improvement in deployment conditions.</div>""",
+        real-world EER (41.52% → 3.56%), roughly a twelvefold improvement in deployment conditions.
+        Model 4 lands within half a point of model 3 on both domains (8.33% / 3.60%) — the
+        classical-TTS fix didn't come at the cost of this equal-error balance.</div>""",
         unsafe_allow_html=True,
     )
 
