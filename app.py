@@ -1,8 +1,13 @@
+import datetime
+import html
+import io
 import itertools
 import os
 import tempfile
 import time
+import uuid
 
+import auth
 import streamlit as st
 import streamlit.components.v1 as components
 import torch
@@ -10,6 +15,7 @@ import torch.nn as nn
 import numpy as np
 import librosa
 import librosa.display
+import soundfile as sf
 import matplotlib.pyplot as plt
 from streamlit_mic_recorder import mic_recorder
 from streamlit_option_menu import option_menu
@@ -24,6 +30,8 @@ MAX_LEN = 400
 SAMPLE_RATE = 16000
 MIN_DURATION_SEC = 0.3
 DEFAULT_THRESHOLD = 0.5
+PEAK_NORM_TARGET = 0.95
+SILENCE_PEAK_THRESHOLD = 0.003
 
 BASELINE_MODEL = "best_model.pt"
 FINETUNED_MODEL = "best_model_finetuned.pt"
@@ -220,6 +228,24 @@ def load_audio_safely(raw_bytes, sr=SAMPLE_RATE):
         return None, None, "This file contains no audio samples."
     if len(y) / sr < MIN_DURATION_SEC:
         return None, None, f"Clip is too short to analyse (under {MIN_DURATION_SEC}s)."
+    # Peak-normalize so a quietly-captured clip (a common browser-microphone
+    # issue — low input gain, distance from the mic) isn't scored on MFCCs an
+    # order of magnitude smaller than anything the model saw in training,
+    # which reads to it as out-of-distribution and gets flagged Synthetic.
+    peak = float(np.max(np.abs(y))) if len(y) else 0.0
+    if peak <= SILENCE_PEAK_THRESHOLD:
+        # Genuinely no signal — usually a muted/wrong microphone or a denied
+        # browser mic permission, not a quiet voice. Scaling this up would
+        # just blast noise floor to full volume, and feeding it to the model
+        # anyway produces a meaningless but confident-looking verdict (seen
+        # in practice: reads as "100% Synthetic"). Surface the real problem
+        # instead, with the measured peak so it's diagnosable.
+        return None, None, (
+            f"This recording is essentially silent (peak level {peak:.6f}). Check that the "
+            "correct microphone is selected and unmuted in your OS sound settings, and that "
+            "this site has microphone permission in the browser, then try again."
+        )
+    y = y / peak * PEAK_NORM_TARGET
     return y, sr, None
 
 
@@ -237,8 +263,8 @@ def inject_css():
         }}
         /* Streamlit's Material icons are ligature fonts — the rule above would
            otherwise render them as their literal names ("upload", "arrow_right"). */
-        [data-testid="stIconMaterial"], .material-symbols-rounded,
-        .material-icons, [class*="material-symbols"] {{
+        [data-testid="stIconMaterial"], [data-testid^="stExpanderIcon"],
+        .material-symbols-rounded, .material-icons, [class*="material-symbols"] {{
             font-family: 'Material Symbols Rounded', 'Material Icons' !important;
         }}
         /* A very slow drift on where the corner glow sits — 28s, meant to be
@@ -431,6 +457,105 @@ def inject_css():
             color: {C['text']}; font-size: 13.5px; line-height: 1.6;
         }}
         .banner b {{ color: {C['warn']}; }}
+
+        /* ---------- session report: recordings library + case file ---------- */
+        [class*="st-key-clipcard_"] {{
+            transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+        }}
+        [class*="st-key-clipcard_"]:hover {{ transform: translateY(-3px); }}
+        [class*="st-key-clipcard_gen_"] {{ border-top: 3px solid {C['genuine']} !important; }}
+        [class*="st-key-clipcard_syn_"] {{ border-top: 3px solid {C['synthetic']} !important; }}
+        [class*="st-key-clipcard_gen_"]:hover {{
+            border-color: {C['genuine']}77 !important; box-shadow: 0 18px 40px -22px {C['genuine']}bb !important;
+        }}
+        [class*="st-key-clipcard_syn_"]:hover {{
+            border-color: {C['synthetic']}77 !important; box-shadow: 0 18px 40px -22px {C['synthetic']}bb !important;
+        }}
+        .clip-top {{ display: flex; justify-content: space-between; align-items: center; }}
+        .clip-chip {{
+            display: inline-block; font-family: 'JetBrains Mono', monospace; font-size: 10px;
+            font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase;
+            padding: 4px 10px; border-radius: 999px; border: 1px solid;
+        }}
+        .clip-no {{ font-family: 'JetBrains Mono', monospace; font-size: 11px; color: {C['muted']}; }}
+        .clip-name {{
+            margin: 12px 0 10px 0; font-weight: 700; font-size: 14.5px; color: {C['text']};
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }}
+        .clip-wave {{
+            background: {C['bg']}88; border: 1px solid {C['border']}; border-radius: 10px; padding: 8px 10px;
+        }}
+        .clip-nowave {{
+            height: 44px; display: flex; align-items: center; justify-content: center;
+            color: {C['muted']}; font-size: 11px;
+        }}
+        .clip-score {{
+            display: flex; align-items: center; gap: 10px; margin-top: 12px;
+            font-size: 11px; color: {C['muted']};
+        }}
+        .clip-score .bar {{ flex: 1; height: 5px; border-radius: 3px; background: {C['border']}; overflow: hidden; }}
+        .clip-score .bar i {{ display: block; height: 100%; border-radius: 3px; }}
+        .clip-score b {{ font-family: 'JetBrains Mono', monospace; font-size: 12px; }}
+        .clip-meta {{ display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0 4px 0; }}
+        .clip-meta span {{
+            font-size: 11px; color: {C['muted']}; background: {C['panel2']};
+            border: 1px solid {C['border']}; border-radius: 6px; padding: 3px 8px;
+        }}
+        .split-bar {{
+            display: flex; height: 6px; border-radius: 3px; overflow: hidden; gap: 2px;
+            margin: 14px 0 6px 0; background: {C['border']};
+        }}
+        .split-bar i {{ display: block; height: 100%; }}
+        .case-head {{
+            position: relative; overflow: hidden; border: 1px solid; border-radius: 20px;
+            padding: 28px 30px; margin: 14px 0 12px 0;
+            display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap;
+            animation: riseIn .5s ease both;
+        }}
+        .case-backdrop {{
+            position: absolute; left: 0; right: 0; bottom: -8px; opacity: .16; pointer-events: none;
+        }}
+        .case-main, .case-score {{ position: relative; z-index: 1; min-width: 0; }}
+        .case-main {{ flex: 1 1 360px; }}
+        .case-kicker {{
+            font-family: 'JetBrains Mono', monospace; font-size: 10.5px; letter-spacing: 1.4px;
+            text-transform: uppercase; color: {C['muted']};
+        }}
+        .case-title {{
+            font-size: 28px; font-weight: 800; color: {C['text']}; margin: 8px 0 14px 0;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }}
+        .case-score {{ text-align: right; }}
+        .case-score .v {{
+            font-family: 'JetBrains Mono', monospace; font-size: 46px; font-weight: 800; line-height: 1;
+        }}
+        .case-score .k {{
+            font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 1.3px;
+            text-transform: uppercase; color: {C['muted']}; margin-top: 6px;
+        }}
+        .case-conf {{
+            display: inline-block; margin-top: 10px; padding: 4px 11px; border: 1px solid;
+            border-radius: 999px; font-size: 11.5px; color: {C['text']}; background: {C['panel']}aa;
+        }}
+        .case-facts {{
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 8px;
+        }}
+        .case-facts div {{
+            background: {C['panel']}; border: 1px solid {C['border']}; border-radius: 12px; padding: 11px 14px;
+        }}
+        .case-facts span {{
+            display: block; font-family: 'JetBrains Mono', monospace; font-size: 9.5px;
+            letter-spacing: 1.2px; text-transform: uppercase; color: {C['muted']};
+        }}
+        .case-facts b {{
+            display: block; margin-top: 4px; font-size: 13.5px; color: {C['text']};
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }}
+        .case-wave {{ padding: 6px 4px 10px 4px; }}
+        @media (max-width: 900px) {{
+            .case-facts {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .case-score {{ text-align: left; }}
+        }}
 
         /* ---------- streamlit widgets ---------- */
         div[data-testid="stFileUploaderDropzone"] {{
@@ -631,13 +756,21 @@ def inject_css():
     )
 
 
-def inject_particles():
+def inject_particles(echo=False):
     """Cursor-reactive particle field painted behind the whole app.
 
     Runs from a zero-height component iframe, which is same-origin on localhost,
     so it can attach a canvas to the parent document. If that access is ever
     blocked the whole thing is skipped silently — it is decoration only.
+
+    `echo=True` (login page only): dots are additionally pushed outward by an
+    invisible shockwave centred on the same fixed viewport point (50% / 42%)
+    as the visible `.auth-ring` CSS pulse in inject_auth_theme, using the
+    identical period/delays/radius range so the two stay in lockstep — the
+    dust field visibly reacts to each "echo" the same way it already reacts
+    to the cursor, then springs back.
     """
+    echo_js = "true" if echo else "false"
     components.html(
         f"""
         <script>
@@ -703,11 +836,36 @@ def inject_particles():
             window.parent.addEventListener('resize', build);
 
             const R = 180;            // cursor influence radius
+
+            // ---- mic-echo shockwave: mirrors the .auth-ring CSS animation
+            // (see inject_auth_theme) exactly, so the invisible force below
+            // and the visible expanding ring the user sees stay in lockstep.
+            // Same fixed viewport point the CSS ring uses (top:42%;left:50%),
+            // not the mic icon's own DOM rect, since that's how the ring
+            // itself is positioned — matching that guarantees they line up.
+            const echoOn = {echo_js};
+            const RING_PERIOD = 4500, RING_DELAYS = [0, 1500, 3000];
+            const RING_R0 = 40, RING_R1 = 1500, RING_BAND = 110;
+            const start = Date.now();
+
             let t = 0;
 
             function frame() {{
               t += 0.012;
               ctx.clearRect(0, 0, W, H);
+
+              let rings = [];
+              const originX = W * 0.5, originY = H * 0.42;
+              if (echoOn) {{
+                const now = Date.now();
+                for (const delay of RING_DELAYS) {{
+                  let pt = ((now - start - delay) % RING_PERIOD + RING_PERIOD) % RING_PERIOD / RING_PERIOD;
+                  const radius = RING_R0 + (RING_R1 - RING_R0) * (1 - Math.pow(1 - pt, 2));
+                  const strength = pt < 0.8 ? (0.9 - pt / 0.8 * 0.7) : (0.2 - (pt - 0.8) / 0.2 * 0.2);
+                  rings.push({{r: radius, s: Math.max(0, strength)}});
+                }}
+              }}
+
               for (const d of dots) {{
                 // gentle ambient drift around the home position
                 const dx0 = Math.cos(t + d.ph) * d.dz * 6;
@@ -722,6 +880,24 @@ def inject_particles():
                   const f = (1 - dist / R);
                   px = (mx / dist) * f * 105;
                   py = (my / dist) * f * 105;
+                }}
+
+                // radial push from each passing echo ring, same idea as the
+                // cursor repulsion but centred on the mic icon and travelling
+                // outward over time instead of following the pointer
+                if (rings.length) {{
+                  const ox = d.x - originX, oy = d.y - originY;
+                  const odist = Math.hypot(ox, oy);
+                  if (odist > 0.001) {{
+                    for (const ring of rings) {{
+                      const diff = Math.abs(odist - ring.r);
+                      if (diff < RING_BAND) {{
+                        const f = (1 - diff / RING_BAND) * ring.s;
+                        px += (ox / odist) * f * 130;
+                        py += (oy / odist) * f * 130;
+                      }}
+                    }}
+                  }}
                 }}
 
                 // spring back toward home, with damping
@@ -1138,6 +1314,7 @@ def plot_mfcc(mfcc):
 
 
 def result_card(filename, label, margin, duration, sr, model_name, threshold, p_genuine):
+    filename = html.escape(filename)  # user-supplied, rendered as raw HTML below
     color = C["genuine"] if label == "Genuine" else C["synthetic"]
     icon = "✅" if label == "Genuine" else "⚠️"
     verdict = "Genuine human voice" if label == "Genuine" else "AI-generated / cloned voice"
@@ -1215,17 +1392,91 @@ def render_figures():
             st.caption(desc)
 
 
+# ------------------------------------------------------------ history storage
+# Signed-in users' history lives in users.db (auth.py) and survives logout.
+# Guests get the same Session Report experience, but only for this browser
+# session — held in memory, never written to disk, so a public deployment
+# doesn't keep strangers' recordings.
+GUEST_HISTORY_LIMIT = 20  # caps per-guest memory on a shared free-tier server
+
+
+def is_guest():
+    return bool(st.session_state.user and st.session_state.user.get("is_guest"))
+
+
+def history_add(filename, prediction, score, threshold, model, margin, analysed_at, audio_bytes):
+    if is_guest():
+        st.session_state.guest_records.append({
+            "id": f"g{uuid.uuid4().hex[:10]}",
+            "filename": filename, "prediction": prediction, "score": score,
+            "threshold": threshold, "model": model, "margin": margin,
+            "analysed_at": analysed_at, "audio_bytes": audio_bytes,
+        })
+        del st.session_state.guest_records[:-GUEST_HISTORY_LIMIT]
+    else:
+        auth.add_analysis_record(st.session_state.user["id"], filename, prediction, score,
+                                 threshold, model, margin, analysed_at, audio_bytes=audio_bytes)
+
+
+def history_records():
+    if is_guest():
+        return list(st.session_state.guest_records)
+    return auth.get_analysis_records(st.session_state.user["id"])
+
+
+def history_count():
+    if is_guest():
+        return len(st.session_state.guest_records)
+    return auth.count_analysis_records(st.session_state.user["id"])
+
+
+def history_clear():
+    if is_guest():
+        st.session_state.guest_records = []
+    else:
+        auth.clear_analysis_records(st.session_state.user["id"])
+
+
+def history_delete(record_id):
+    if is_guest():
+        st.session_state.guest_records = [
+            r for r in st.session_state.guest_records if r["id"] != record_id
+        ]
+    else:
+        auth.delete_analysis_record(st.session_state.user["id"], record_id)
+
+
+def record_audio(r):
+    if "audio_bytes" in r:
+        return r["audio_bytes"]
+    return auth.get_audio_bytes(r.get("audio_path"))
+
+
 def analyse(model, model_name, filename, raw_bytes, show_details=True,
             threshold=DEFAULT_THRESHOLD, show_playback=True):
     if show_playback:
         st.audio(raw_bytes)
-    y, sr, err = load_audio_safely(raw_bytes)
-    if err:
-        st.error(f"**{filename}** — {err}")
-        return
 
-    with st.spinner("Analysing audio…"):
+    with st.status(f"Analysing {filename}…", expanded=True) as status:
+        status.write("🎧 Loading and preparing audio…")
+        y, sr, err = load_audio_safely(raw_bytes)
+        if err:
+            status.update(label="Could not analyse this clip", state="error")
+            st.error(f"**{filename}** — {err}")
+            return
+
+        status.write("📊 Extracting MFCC features and running the CNN + BiLSTM model…")
         label, margin, p_genuine, mfcc = predict(model, y, sr, threshold)
+
+        status.write("✅ Done")
+        status.update(label=f"Analysis complete — {filename}", state="complete")
+
+    # Saved before the result card and plots render, so leaving the page while
+    # they're still drawing can't drop the record.
+    history_add(
+        filename, label, f"{p_genuine:.3f}", f"{threshold:.2f}", model_name, f"{margin:.3f}",
+        time.strftime("%Y-%m-%d %H:%M:%S"), audio_bytes=raw_bytes,
+    )
 
     left, right = st.columns([1, 1.6])
     with left:
@@ -1243,14 +1494,6 @@ def analyse(model, model_name, filename, raw_bytes, show_details=True,
             st.pyplot(fig2)
             plt.close(fig2)
 
-    st.session_state.history.append({
-        "Filename": filename,
-        "Prediction": label,
-        "Score": f"{p_genuine:.3f}",
-        "Threshold": f"{threshold:.2f}",
-        "Model": model_name,
-        "Time": time.strftime("%H:%M:%S"),
-    })
 
 
 # ============================================================
@@ -1509,14 +1752,26 @@ def page_detect(models):
                                  key=f"rec_{st.session_state.rec_nonce}")
             # A fresh recording (bytes differ from whatever is already pending) enters
             # review — it is NOT analysed yet. mic_recorder keeps returning its last
-            # result on every rerun, so bytes must be compared, not just truthiness.
-            if audio and (pending is None or audio["bytes"] != pending["bytes"]):
-                st.session_state.pending_recording = {
-                    "bytes": audio["bytes"],
-                    "name": f"live_recording_{time.strftime('%H%M%S')}.wav",
-                }
-                st.session_state.recording_analysed = False
-                st.rerun()
+            # result on every rerun, so bytes must be compared against the raw
+            # capture, not just truthiness.
+            if audio and (pending is None or audio["bytes"] != pending.get("raw_bytes")):
+                # Decode + peak-normalize immediately, so the review playback is
+                # already at an audible, model-consistent level — not the raw,
+                # often very quiet, browser-microphone capture (see
+                # load_audio_safely for why quiet audio also skews the score).
+                y, sr, err = load_audio_safely(audio["bytes"])
+                if err:
+                    st.error(f"Could not process that recording — {err}")
+                else:
+                    buf = io.BytesIO()
+                    sf.write(buf, y, sr, format="WAV")
+                    st.session_state.pending_recording = {
+                        "raw_bytes": audio["bytes"],
+                        "bytes": buf.getvalue(),
+                        "name": f"live_recording_{time.strftime('%H%M%S')}.wav",
+                    }
+                    st.session_state.recording_analysed = False
+                    st.rerun()
 
             pending = st.session_state.pending_recording
             if pending:
@@ -1777,36 +2032,371 @@ def page_model(models):
                    " — add them to enable the full four-stage comparison.")
 
 
-def page_report():
-    hero("Evidence trail", "Session Report",
-         "Every clip analysed in this session, in order, with the model used — exportable as a CSV "
-         "for inclusion in project documentation.")
+def _record_margin(r):
+    """Older rows saved before the margin column existed fall back to
+    recomputing it from the stored score/threshold, via the same formula
+    predict() uses — new rows already have it stored directly."""
+    if r.get("margin") not in (None, ""):
+        return float(r["margin"])
+    p_genuine, threshold = float(r["score"]), float(r["threshold"])
+    if p_genuine > threshold:
+        m = (p_genuine - threshold) / max(1.0 - threshold, 1e-9)
+    else:
+        m = (threshold - p_genuine) / max(threshold, 1e-9)
+    return min(max(m, 0.0), 1.0)
 
-    if not st.session_state.history:
-        st.info("No clips analysed yet. Head to **Detect Voice** to begin.")
+
+REPORT_PAGE_SIZE = 9
+
+
+@st.cache_data(show_spinner=False, max_entries=256)
+def clip_profile(audio_bytes, n_bars):
+    """Loudness envelope (n_bars peaks scaled 0-1) and duration of a stored
+    clip. Cached on the audio bytes, so the recordings library decodes each
+    clip once rather than on every rerun."""
+    y, sr, err = load_audio_safely(audio_bytes)
+    if err:
+        return None
+    env = np.array([c.max() if len(c) else 0.0 for c in np.array_split(np.abs(y), n_bars)])
+    env = env / (env.max() or 1.0)
+    return {"bars": [float(v) for v in env], "duration": len(y) / sr}
+
+
+def waveform_svg(bars, color, height=44):
+    """Mirrored bar waveform drawn from the clip's real loudness envelope —
+    each bar grows in with a slight stagger, same CSS-only motion approach
+    (and per-render uid) as the gauge and sparklines."""
+    uid = next(_uid_counter)
+    mid = height / 2
+    rects = "".join(
+        f'<rect x="{i * 4 + 0.7:.1f}" y="{mid - h / 2:.1f}" width="2.6" height="{h:.1f}" rx="1.3" '
+        f'class="wf{uid} anim-reveal" style="animation-delay:{i * 0.01:.2f}s"/>'
+        for i, h in ((i, max(2.0, v * (height - 4))) for i, v in enumerate(bars))
+    )
+    return _flatten_markup(f"""
+    <svg viewBox="0 0 {len(bars) * 4} {height}" width="100%" height="{height}"
+         preserveAspectRatio="none" style="display:block;">
+      <defs><linearGradient id="wfg{uid}" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0" stop-color="{color}" stop-opacity=".55"/>
+        <stop offset=".5" stop-color="{color}" stop-opacity="1"/>
+        <stop offset="1" stop-color="{color}" stop-opacity=".55"/>
+      </linearGradient></defs>
+      <g fill="url(#wfg{uid})">{rects}</g>
+      <style>
+        .wf{uid} {{ transform-box: fill-box; transform-origin: center;
+                    animation: wfGrow{uid} .55s cubic-bezier(.16,.84,.44,1) backwards; }}
+        @keyframes wfGrow{uid} {{ from {{ transform: scaleY(.06); opacity: .25; }}
+                                  to {{ transform: scaleY(1); opacity: 1; }} }}
+      </style>
+    </svg>
+    """)
+
+
+def friendly_time(stamp):
+    try:
+        t = datetime.datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return stamp
+    today = datetime.date.today()
+    if t.date() == today:
+        day = "Today"
+    elif t.date() == today - datetime.timedelta(days=1):
+        day = "Yesterday"
+    else:
+        day = t.strftime("%d %b %Y")
+    return f"{day}, {t:%H:%M}"
+
+
+def model_short(model_label):
+    return f"Model {model_label.split(' · ')[0]}" if " · " in model_label else model_label
+
+
+def confidence_label(margin):
+    if margin >= 0.7:
+        return "Strong"
+    if margin >= 0.35:
+        return "Moderate"
+    return "Borderline"
+
+
+def _open_record(key):
+    st.session_state.report_open = key
+    st.session_state.force_scroll_top = True
+
+
+def _close_record():
+    st.session_state.report_open = None
+    st.session_state.force_scroll_top = True
+
+
+def _show_more_records():
+    st.session_state.report_limit = st.session_state.get("report_limit", REPORT_PAGE_SIZE) + REPORT_PAGE_SIZE
+
+
+def _verdict_style(label):
+    is_gen = label == "Genuine"
+    return (is_gen, C["genuine"] if is_gen else C["synthetic"],
+            "Genuine" if is_gen else "Synthetic")
+
+
+def render_clip_card(r):
+    """One recording in the library grid: verdict, its real waveform, the
+    recorded score, and when/how it was analysed — at a glance, before
+    opening the full case file."""
+    is_gen, color, chip = _verdict_style(r["prediction"])
+    audio = record_audio(r)
+    prof = clip_profile(audio, 44) if audio else None
+    score = float(r["score"])
+    wave = (waveform_svg(prof["bars"], color) if prof else
+            f'<div class="clip-nowave">audio no longer stored</div>')
+    duration = f"{prof['duration']:.1f}s" if prof else "—"
+    name = html.escape(r["filename"])
+    with st.container(border=True, key=f"clipcard_{'gen' if is_gen else 'syn'}_{r['id']}"):
+        st.markdown(_flatten_markup(f"""
+        <div class="clip-top">
+          <span class="clip-chip" style="color:{color};background:{color}1a;border-color:{color}55;">
+            {'●' if is_gen else '▲'} {chip}</span>
+          <span class="clip-no">#{r['_no']:03d}</span>
+        </div>
+        <div class="clip-name" title="{name}">{name}</div>
+        <div class="clip-wave">{wave}</div>
+        <div class="clip-score"><span>Genuine score</span>
+          <div class="bar"><i style="width:{score * 100:.0f}%;background:{color};"></i></div>
+          <b style="color:{color}">{score * 100:.0f}%</b></div>
+        <div class="clip-meta"><span>{friendly_time(r['analysed_at'])}</span>
+          <span>{duration}</span><span>{model_short(r['model'])}</span></div>
+        """), unsafe_allow_html=True)
+        st.button("Open full report", key=f"open_{r['id']}", icon=":material/open_in_full:",
+                  on_click=_open_record, args=(str(r["id"]),), use_container_width=True)
+
+
+def render_library(records):
+    newest_first = list(reversed(records))
+    f1, f2, f3 = st.columns([1.25, 1.7, 1])
+    with f1:
+        verdict = st.segmented_control("Show", ["All", "Genuine", "Synthetic"], default="All",
+                                       key="report_filter", label_visibility="collapsed")
+    with f2:
+        query = st.text_input("Search", placeholder="Search recordings by filename…",
+                              key="report_search", label_visibility="collapsed",
+                              icon=":material/search:")
+    with f3:
+        order = st.selectbox("Sort", ["Newest first", "Oldest first", "Most genuine", "Most synthetic"],
+                             key="report_sort", label_visibility="collapsed")
+
+    items = newest_first
+    if verdict in ("Genuine", "Synthetic"):
+        items = [r for r in items if r["prediction"] == verdict]
+    if query:
+        items = [r for r in items if query.strip().lower() in r["filename"].lower()]
+    if order == "Oldest first":
+        items = list(reversed(items))
+    elif order == "Most genuine":
+        items = sorted(items, key=lambda r: float(r["score"]), reverse=True)
+    elif order == "Most synthetic":
+        items = sorted(items, key=lambda r: float(r["score"]))
+
+    if not items:
+        st.info("No recordings match these filters.")
         return
 
-    rows = st.session_state.history
-    genuine = sum(1 for r in rows if r["Prediction"] == "Genuine")
-    stat_row([(str(len(rows)), "Clips analysed"),
+    limit = st.session_state.get("report_limit", REPORT_PAGE_SIZE)
+    shown = items[:limit]
+    for start in range(0, len(shown), 3):
+        cols = st.columns(3)
+        for col, r in zip(cols, shown[start:start + 3]):
+            with col:
+                render_clip_card(r)
+    if len(items) > limit:
+        st.button(f"Show more recordings ({len(items) - limit} more)", icon=":material/expand_more:",
+                  on_click=_show_more_records, use_container_width=True)
+
+
+def render_case_file(r, newer, older):
+    """The full report for one historical entry, laid out as a case file.
+
+    Score, verdict and model are shown exactly as recorded at analysis time
+    (never re-scored against whichever model happens to be selected today,
+    so history stays an honest record of what actually happened). Playback
+    and the signal-analysis plots are regenerated from the saved audio,
+    which is the only part that doesn't need the original model to rebuild.
+    """
+    is_gen, color, chip = _verdict_style(r["prediction"])
+    p_genuine, threshold, margin = float(r["score"]), float(r["threshold"]), _record_margin(r)
+    audio = record_audio(r)
+    loaded = load_audio_safely(audio) if audio else (None, None, "missing")
+    y, sr, err = loaded
+    prof = clip_profile(audio, 150) if audio and not err else None
+    name = html.escape(r["filename"])
+    confidence = confidence_label(margin)
+
+    n1, _, n2, n3 = st.columns([1.5, 2.6, 0.9, 0.9])
+    n1.button("Back to all recordings", icon=":material/arrow_back:", on_click=_close_record,
+              use_container_width=True, key="case_back")
+    n2.button("‹ Newer", disabled=newer is None, on_click=_open_record,
+              args=(str(newer["id"]) if newer else "",), use_container_width=True, key="case_newer")
+    n3.button("Older ›", disabled=older is None, on_click=_open_record,
+              args=(str(older["id"]) if older else "",), use_container_width=True, key="case_older")
+
+    backdrop = waveform_svg(prof["bars"], color, height=120) if prof else ""
+    st.markdown(_flatten_markup(f"""
+    <div class="case-head" style="border-color:{color}55;
+         background:radial-gradient(120% 140% at 0% 0%, {color}26, transparent 55%),
+                    linear-gradient(160deg, {C['panel2']}, {C['panel']});">
+      <div class="case-backdrop">{backdrop}</div>
+      <div class="case-main">
+        <div class="case-kicker">Case file #{r['_no']:03d} &nbsp;·&nbsp; {friendly_time(r['analysed_at'])}</div>
+        <div class="case-title" title="{name}">{name}</div>
+        <span class="clip-chip" style="color:{color};background:{color}1a;border-color:{color}66;">
+          {'● Genuine human voice' if is_gen else '▲ AI-generated / cloned voice'}</span>
+      </div>
+      <div class="case-score">
+        <div class="v" style="color:{color};text-shadow:0 0 28px {color}66;">{p_genuine * 100:.0f}%</div>
+        <div class="k">likelihood genuine</div>
+        <div class="case-conf" style="border-color:{color}55;">{confidence} confidence</div>
+      </div>
+    </div>
+    <div class="case-facts">
+      <div><span>Analysed</span><b>{html.escape(r['analysed_at'])}</b></div>
+      <div><span>Model</span><b>{html.escape(model_short(r['model']))}</b></div>
+      <div><span>Threshold</span><b>{threshold:.2f}</b></div>
+      <div><span>Margin</span><b>{margin * 100:.1f}%</b></div>
+      <div><span>Duration</span><b>{f"{len(y) / sr:.2f}s" if not err else "—"}</b></div>
+    </div>
+    """), unsafe_allow_html=True)
+
+    if err:
+        st.warning("The original audio for this entry is no longer available, so playback and "
+                   "signal plots can't be rebuilt — the recorded result above is unchanged.")
+    else:
+        st.markdown("#### Recording")
+        with st.container(border=True, key="case_player"):
+            st.markdown(f'<div class="case-wave">{waveform_svg(prof["bars"], color, height=72)}</div>',
+                        unsafe_allow_html=True)
+            st.audio(audio)
+            d1, d2, _ = st.columns([1, 1, 2])
+            d1.download_button("Download audio", audio, file_name=r["filename"],
+                               icon=":material/download:", use_container_width=True, key="case_dl")
+            with d2.popover("Delete recording", icon=":material/delete:", use_container_width=True):
+                st.markdown("This permanently removes the clip and its report.")
+                if st.button("Yes, delete it", type="primary", key="case_delete"):
+                    history_delete(r["id"])
+                    _close_record()
+                    st.rerun()
+
+    tabs = ["Verdict", "What this means"] + ([] if err else ["Waveform & spectrogram", "MFCC fingerprint"])
+    t = st.tabs([f"{icon}  {label}" for icon, label in
+                 zip(["🎯", "💡", "🌊", "🧬"], tabs)])
+    with t[0]:
+        left, right = st.columns([1, 1.6])
+        with left:
+            st.markdown(gauge_svg(p_genuine, r["prediction"], threshold), unsafe_allow_html=True)
+        with right:
+            result_card(r["filename"], r["prediction"], margin, len(y) / sr if not err else 0.0,
+                        sr or SAMPLE_RATE, r["model"], threshold, p_genuine)
+    with t[1]:
+        if confidence == "Borderline":
+            meaning = ("This score sits close to the decision threshold, so treat the verdict as "
+                       "<b>inconclusive</b>. A longer, cleaner recording — or comparing models on the "
+                       "Detect Voice page — will give a firmer answer.")
+        elif is_gen:
+            meaning = (f"The model found the patterns of a <b>real human voice</b> with {confidence.lower()} "
+                       "confidence — natural variation in pitch, timing and breath that synthesis "
+                       "engines tend to smooth over.")
+        else:
+            meaning = (f"The model found <b>signs of synthetic generation</b> with {confidence.lower()} "
+                       "confidence — spectral regularities typical of text-to-speech and voice-cloning "
+                       "engines. Treat requests made in this voice with caution and verify through "
+                       "another channel.")
+        note = MODEL_NOTES.get(available_models().get(r["model"]), "")
+        st.markdown(f'<div class="card"><p style="font-size:14px;color:{C["text"]};">{meaning}</p></div>',
+                    unsafe_allow_html=True)
+        st.markdown(
+            f"- **Score {p_genuine:.3f}** is the model's likelihood that the voice is genuine; anything "
+            f"above the **{threshold:.2f}** threshold counts as Genuine.\n"
+            f"- **Margin {margin * 100:.1f}%** is how far the score sits from that threshold, on its side "
+            f"— higher means a more decisive verdict.\n"
+            f"- **{r['model']}**" + (f": {note}" if note else "") + "\n"
+            "- This is the result exactly as recorded at analysis time — it isn't re-scored if the "
+            "models change later."
+        )
+    if not err:
+        with t[2]:
+            fig = plot_analysis(y, sr, r["filename"])
+            st.pyplot(fig)
+            plt.close(fig)
+        with t[3]:
+            fig2 = plot_mfcc(extract_mfcc(y, sr=sr))
+            st.pyplot(fig2)
+            plt.close(fig2)
+
+
+def page_report():
+    records = [dict(r, _no=i) for i, r in enumerate(history_records(), start=1)]
+    newest_first = list(reversed(records))
+    keys = [str(r["id"]) for r in newest_first]
+    open_key = st.session_state.get("report_open")
+    if open_key in keys:
+        i = keys.index(open_key)
+        render_case_file(newest_first[i],
+                         newest_first[i - 1] if i > 0 else None,
+                         newest_first[i + 1] if i + 1 < len(newest_first) else None)
+        return
+
+    if is_guest():
+        hero("Evidence trail", "Session Report",
+             "Every clip you've analysed in this visit — browse your recordings, replay them, and "
+             "open any one for its full case file.")
+        st.info("You're browsing as a guest, so this list is kept only until you leave — "
+                "nothing is saved on the server. Sign up to keep a permanent history.")
+    else:
+        hero("Evidence trail", "Session Report",
+             "Every clip you've ever analysed on this account — browse your recordings, replay them, "
+             "and open any one for its full case file. Persists across logins.")
+
+    if not records:
+        st.markdown(_flatten_markup(f"""
+        <div class="card" style="text-align:center;padding:42px 24px;">
+          <div style="width:64px;margin:0 auto 14px auto;opacity:.8;">{mic_icon_svg()}</div>
+          <h4>No recordings yet</h4>
+          <p>Analyse a clip on the <b>Detect Voice</b> page and it will appear here, ready to replay
+          and inspect.</p>
+        </div>"""), unsafe_allow_html=True)
+        return
+
+    genuine = sum(1 for r in records if r["prediction"] == "Genuine")
+    synthetic = len(records) - genuine
+    stat_row([(str(len(records)), "Recordings"),
               (str(genuine), "Genuine"),
-              (str(len(rows) - genuine), "Synthetic")])
+              (str(synthetic), "Synthetic"),
+              (friendly_time(newest_first[0]["analysed_at"]).split(",")[0], "Last analysed")])
+    st.markdown(_flatten_markup(f"""
+    <div class="split-bar" title="{genuine} genuine · {synthetic} synthetic">
+      <i style="width:{genuine / len(records) * 100:.1f}%;background:{C['genuine']};"></i>
+      <i style="width:{synthetic / len(records) * 100:.1f}%;background:{C['synthetic']};"></i>
+    </div>"""), unsafe_allow_html=True)
 
-    st.markdown("### Detailed log")
-    st.table(rows)
+    st.markdown("### Your recordings")
+    render_library(records)
 
-    cols = ["Filename", "Prediction", "Score", "Threshold", "Model", "Time"]
-    csv = ",".join(cols) + "\n" + "\n".join(
-        ",".join(str(r.get(c, "")).replace(",", ";") for c in cols) for r in rows
-    )
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        st.download_button("⬇️  Export CSV", csv, file_name="detection_report.csv",
-                           use_container_width=True)
-    with c2:
-        if st.button("🗑️  Clear session", use_container_width=True):
-            st.session_state.history = []
-            st.rerun()
+    with st.expander("📋  Detailed log, export & clear"):
+        cols = ["Filename", "Prediction", "Score", "Threshold", "Model", "Time"]
+        rows = [{"Filename": r["filename"], "Prediction": r["prediction"], "Score": r["score"],
+                 "Threshold": r["threshold"], "Model": r["model"], "Time": r["analysed_at"]}
+                for r in records]
+        st.table(rows)
+        csv = ",".join(cols) + "\n" + "\n".join(
+            ",".join(str(r.get(c, "")).replace(",", ";") for c in cols) for r in rows
+        )
+        c1, c2, _ = st.columns([1, 1, 2])
+        c1.download_button("Export CSV", csv, file_name="detection_report.csv",
+                           icon=":material/table_view:", use_container_width=True)
+        with c2.popover("Clear my history", icon=":material/delete_sweep:", use_container_width=True):
+            st.markdown("This permanently deletes **every** recording and report on this "
+                        + ("visit." if is_guest() else "account."))
+            if st.button("Yes, clear everything", type="primary", key="clear_history_confirm"):
+                history_clear()
+                st.rerun()
 
 
 def page_coverage():
@@ -1915,10 +2505,246 @@ def page_about():
     ])
 
 
+def password_field(label, key, help=None):
+    """A text_input with a per-field show/hide toggle, since Streamlit has
+    no built-in one — the checkbox's own key is derived from `key` so two
+    password fields on the same form (e.g. password + confirm) don't fight
+    over the same show/hide state."""
+    show = st.checkbox("Show password", key=f"{key}_show", value=False)
+    return st.text_input(label, type="default" if show else "password", key=key, help=help)
+
+
+def inject_auth_theme():
+    """A background unique to the login screen — concentric rings pulsing
+    outward from center, like a mic listening for a voice, layered over the
+    same cursor-reactive dust field the rest of the app uses (inject_particles
+    is called with echo=True right after this, so the dust also reacts to
+    each ring). Also hides the sidebar chrome entirely, since it's empty
+    until a user logs in.
+
+    The gradient is applied to `.stApp`, not `[data-testid="stAppViewContainer"]`
+    — inject_particles forces that element's background to transparent (with
+    !important, so its canvas shows through) regardless of injection order,
+    which would silently erase a gradient placed there instead.
+    """
+    st.markdown(
+        f"""
+        <style>
+        [data-testid="collapsedControl"] {{ display: none; }}
+        .stApp {{
+            background:
+                radial-gradient(circle at 50% 42%, {C['panel2']}55 0%, transparent 60%),
+                radial-gradient(ellipse at center, {C['bg']} 0%, #05090c 100%);
+            overflow: hidden;
+        }}
+        .auth-ring {{
+            position: fixed; top: 42%; left: 50%; border-radius: 50%;
+            border: 1px solid {C['accent']}66;
+            transform: translate(-50%, -50%);
+            width: 40px; height: 40px; opacity: 0;
+            animation: authPulse 4.5s cubic-bezier(.15,.65,.3,1) infinite;
+            pointer-events: none; z-index: 0;
+        }}
+        @keyframes authPulse {{
+            0% {{ width: 40px; height: 40px; opacity: .85; }}
+            80% {{ opacity: .12; }}
+            100% {{ width: 1500px; height: 1500px; opacity: 0; }}
+        }}
+        [data-testid="stVerticalBlockBorderWrapper"] {{
+            background: {C['panel']}cc !important;
+            backdrop-filter: blur(14px);
+            border: 1px solid {C['accent']}40 !important;
+            border-radius: 22px !important;
+            box-shadow: 0 20px 60px #00000066, 0 0 0 1px {C['border']}80;
+            padding: 6px 8px;
+        }}
+        </style>
+        <div class="auth-ring" style="animation-delay:0s;"></div>
+        <div class="auth-ring" style="animation-delay:1.5s;"></div>
+        <div class="auth-ring" style="animation-delay:3s;"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def page_auth():
+    inject_auth_theme()
+    inject_particles(echo=True)
+    st.markdown("<div style='height:5vh'></div>", unsafe_allow_html=True)
+    _, mid, _ = st.columns([1, 1.15, 1])
+    with mid:
+        st.markdown(
+            f"""<div style="text-align:center;margin-bottom:18px;position:relative;z-index:1;">
+              <div style="width:64px;height:64px;margin:0 auto 14px auto;border-radius:50%;
+                   background:linear-gradient(135deg,{C['accent']},{C['accent2']});
+                   display:flex;align-items:center;justify-content:center;
+                   box-shadow:0 0 32px {C['accent']}55;">{mic_icon_svg()}</div>
+              <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:24px;
+                   color:{C['text']};">Synthetic Voice Detection</div>
+              <div style="color:{C['muted']};font-size:13px;margin-top:4px;">
+                   Sign in, or try it instantly as a guest</div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+
+        with st.container(border=True):
+            mode = option_menu(
+                menu_title=None,
+                options=["Sign In", "Sign Up", "Forgot Password"],
+                icons=["box-arrow-in-right", "person-plus", "key"],
+                orientation="horizontal",
+                default_index=["signin", "signup", "forgot"].index(st.session_state.auth_mode),
+                key=f"auth_mode_menu_{st.session_state.auth_nonce}",
+                styles={
+                    "container": {"padding": "5px", "background-color": C["panel2"],
+                                  "border": f"1px solid {C['border']}", "border-radius": "14px"},
+                    "icon": {"color": C["accent"], "font-size": "14px"},
+                    "nav-link": {"font-size": "12px", "text-align": "center", "padding": "10px 6px",
+                                 "border-radius": "10px", "color": C["muted"], "margin": "0 2px", "font-weight": "600"},
+                    "nav-link-selected": {"background": f"linear-gradient(135deg,{C['accent']},{C['accent2']})",
+                                           "color": C["bg"], "font-weight": "700"},
+                },
+            )
+            new_mode = {"Sign In": "signin", "Sign Up": "signup", "Forgot Password": "forgot"}[mode]
+            if new_mode != st.session_state.auth_mode:
+                st.session_state.auth_mode = new_mode
+                st.session_state.forgot_stage = 0
+                st.rerun()
+
+            if st.session_state.auth_mode == "signin":
+                st.markdown("#### Sign In")
+                username = st.text_input("Username", key="signin_username")
+                password = password_field("Password", key="signin_password")
+                if st.button("Sign In", type="primary", use_container_width=True):
+                    if not username or not password:
+                        st.error("Enter both your username and password.")
+                    else:
+                        user = auth.verify_login(username, password)
+                        if user is None:
+                            st.error("Incorrect username or password.")
+                        else:
+                            st.session_state.authenticated = True
+                            st.session_state.user = user
+                            st.rerun()
+
+            elif st.session_state.auth_mode == "signup":
+                st.markdown("#### Sign Up")
+                col1, col2 = st.columns(2)
+                with col1:
+                    first_name = st.text_input("First name", key="signup_first")
+                with col2:
+                    last_name = st.text_input("Last name", key="signup_last")
+                username = st.text_input("Username", key="signup_username")
+                phone_number = st.text_input("Mobile number (optional)", key="signup_phone")
+                password = password_field(
+                    "Password", key="signup_password",
+                    help="At least 8 characters, with uppercase, lowercase, and a number.",
+                )
+                if password:
+                    label, tone = auth.password_strength_label(password)
+                    st.markdown(f"""<div style="color:{C[tone]};font-size:12.5px;margin:-8px 0 8px 2px;">
+                        Password strength: <b>{label}</b></div>""", unsafe_allow_html=True)
+                confirm_password = password_field("Confirm password", key="signup_confirm")
+                security_question = st.selectbox("Security question (for password reset)",
+                                                 auth.SECURITY_QUESTIONS, key="signup_question")
+                security_answer = st.text_input("Answer", key="signup_answer")
+
+                if st.button("Create Account", type="primary", use_container_width=True):
+                    valid, msg = auth.validate_password_strength(password)
+                    if not first_name or not last_name or not username or not password:
+                        st.error("First name, last name, username, and password are all required.")
+                    elif not valid:
+                        st.error(msg)
+                    elif password != confirm_password:
+                        st.error("Passwords do not match.")
+                    elif not security_answer:
+                        st.error("Please answer the security question — it's needed to reset your password later.")
+                    elif auth.username_exists(username):
+                        st.error(f"Username '{username}' is already taken.")
+                    else:
+                        auth.create_user(first_name, last_name, username, password,
+                                         phone_number, security_question, security_answer)
+                        st.success("Account created — you can now sign in.")
+                        st.session_state.auth_mode = "signin"
+                        st.session_state.auth_nonce += 1
+                        st.rerun()
+
+            else:  # forgot
+                st.markdown("#### Forgot Password")
+                if st.session_state.forgot_stage == 0:
+                    username = st.text_input("Your username", key="forgot_username_input")
+                    if st.button("Continue", type="primary", use_container_width=True):
+                        question = auth.get_security_question(username)
+                        if question is None:
+                            st.error("No account found with that username.")
+                        else:
+                            st.session_state.forgot_username = username
+                            st.session_state.forgot_question = question
+                            st.session_state.forgot_stage = 1
+                            st.rerun()
+                elif st.session_state.forgot_stage == 1:
+                    st.caption(f"Signed in as **{st.session_state.forgot_username}**")
+                    st.markdown(f"**{st.session_state.forgot_question}**")
+                    answer = st.text_input("Your answer", key="forgot_answer_input")
+                    if st.button("Verify", type="primary", use_container_width=True):
+                        if auth.verify_security_answer(st.session_state.forgot_username, answer):
+                            st.session_state.forgot_stage = 2
+                            st.rerun()
+                        else:
+                            st.error("That answer doesn't match our records.")
+                else:
+                    st.caption(f"Resetting password for **{st.session_state.forgot_username}**")
+                    new_password = password_field(
+                        "New password", key="forgot_new_password",
+                        help="At least 8 characters, with uppercase, lowercase, and a number.",
+                    )
+                    confirm = password_field("Confirm new password", key="forgot_confirm_password")
+                    if st.button("Reset Password", type="primary", use_container_width=True):
+                        valid, msg = auth.validate_password_strength(new_password)
+                        if not valid:
+                            st.error(msg)
+                        elif new_password != confirm:
+                            st.error("Passwords do not match.")
+                        else:
+                            auth.reset_password(st.session_state.forgot_username, new_password)
+                            st.success("Password reset — you can now sign in with your new password.")
+                            st.session_state.auth_mode = "signin"
+                            st.session_state.auth_nonce += 1
+                            st.session_state.forgot_stage = 0
+                            st.rerun()
+
+        st.markdown(
+            f"""<div style="display:flex;align-items:center;gap:12px;margin:14px 0 10px 0;
+                 color:{C['muted']};font-size:12px;position:relative;z-index:1;">
+              <div style="flex:1;height:1px;background:{C['border']};"></div>or
+              <div style="flex:1;height:1px;background:{C['border']};"></div></div>""",
+            unsafe_allow_html=True,
+        )
+        if st.button("Continue as guest", icon=":material/person:", use_container_width=True):
+            st.session_state.authenticated = True
+            st.session_state.user = {"id": None, "first_name": "Guest", "is_guest": True}
+            st.session_state.guest_records = []
+            st.rerun()
+        st.caption("Guests can use every feature, but nothing they analyse is saved. "
+                   "Signed-in users' clips are stored so they can be reopened later. "
+                   "Accounts on the public demo may be reset from time to time.")
+
+
 # ============================================================
 # APP
 # ============================================================
-st.set_page_config(page_title="Synthetic Voice Detection", page_icon="🎙️", layout="wide")
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+# Read before set_page_config (the one Streamlit call that must run first)
+# so the sidebar starts fully collapsed on the login screen — there's
+# nothing in it until a user is signed in.
+st.set_page_config(
+    page_title="Synthetic Voice Detection", page_icon="🎙️", layout="wide",
+    initial_sidebar_state="expanded" if st.session_state.authenticated else "collapsed",
+)
+
+auth.init_db()
 
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = True
@@ -1929,11 +2755,23 @@ C.clear()
 C.update(C_DARK if st.session_state.dark_mode else C_LIGHT)
 
 inject_css()
-inject_particles()
 inject_micro_interactions()
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+if "user" not in st.session_state:
+    st.session_state.user = None
+if "auth_mode" not in st.session_state:
+    st.session_state.auth_mode = "signin"
+if "auth_nonce" not in st.session_state:
+    st.session_state.auth_nonce = 0
+if "forgot_stage" not in st.session_state:
+    st.session_state.forgot_stage = 0
+
+if not st.session_state.authenticated:
+    page_auth()
+    st.stop()
+
+inject_particles()
+
 if "threshold" not in st.session_state:
     st.session_state.threshold = DEFAULT_THRESHOLD
 if "thr_nonce" not in st.session_state:
@@ -1965,6 +2803,11 @@ with st.sidebar:
         </div>""",
         unsafe_allow_html=True,
     )
+    st.markdown(
+        f"""<div style="color:{C['text']};font-size:12px;margin:-6px 0 12px 2px;">
+        Welcome, <b>{st.session_state.user['first_name']}</b></div>""",
+        unsafe_allow_html=True,
+    )
 
     selected = option_menu(
         menu_title=None,
@@ -1993,25 +2836,19 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown(
-        f"""<div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;
-             color:{C['muted']};letter-spacing:1.3px;text-transform:uppercase;
-             margin-bottom:10px;">System status</div>
-        <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;
-             color:{C['muted']};line-height:2.1;">
-          <div style="display:flex;justify-content:space-between;">
-            <span>COMPUTE</span><b style="color:{C['accent']}">{device.upper()}</b></div>
-          <div style="display:flex;justify-content:space-between;">
-            <span>MODELS</span><b style="color:{C['accent']}">{len(models)}</b></div>
-          <div style="display:flex;justify-content:space-between;">
-            <span>ANALYSED</span><b style="color:{C['accent']}">{len(st.session_state.history)}</b></div>
-        </div>""",
-        unsafe_allow_html=True,
-    )
+    # Filled in after the page renders (bottom of this file), so ANALYSED
+    # already includes any clip analysed during this same rerun.
+    status_slot = st.empty()
 
     dark_mode = st.toggle("Dark mode", value=st.session_state.dark_mode, key="dark_mode_toggle")
     if dark_mode != st.session_state.dark_mode:
         st.session_state.dark_mode = dark_mode
+        st.rerun()
+
+    if st.button("Sign in / Sign up" if is_guest() else "Log out", use_container_width=True):
+        st.session_state.authenticated = False
+        st.session_state.user = None
+        st.session_state.guest_records = []
         st.rerun()
 
 # Only reset scroll when the page actually changed — not on every rerun,
@@ -2025,6 +2862,8 @@ if "last_page" not in st.session_state:
     st.session_state.last_page = selected
 page_changed = st.session_state.last_page != selected
 st.session_state.last_page = selected
+if page_changed:
+    st.session_state.report_open = None  # Session Report reopens on the library, not a stale case
 
 if selected == "Overview":
     page_overview(models)
@@ -2049,5 +2888,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if page_changed:
+status_slot.markdown(
+    f"""<div style="font-family:'JetBrains Mono',monospace;font-size:9.5px;
+         color:{C['muted']};letter-spacing:1.3px;text-transform:uppercase;
+         margin-bottom:10px;">System status</div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:11.5px;
+         color:{C['muted']};line-height:2.1;">
+      <div style="display:flex;justify-content:space-between;">
+        <span>COMPUTE</span><b style="color:{C['accent']}">{device.upper()}</b></div>
+      <div style="display:flex;justify-content:space-between;">
+        <span>MODELS</span><b style="color:{C['accent']}">{len(models)}</b></div>
+      <div style="display:flex;justify-content:space-between;">
+        <span>ANALYSED</span><b style="color:{C['accent']}">{history_count()}</b></div>
+    </div>""",
+    unsafe_allow_html=True,
+)
+
+if page_changed or st.session_state.pop("force_scroll_top", False):
     scroll_to_top()

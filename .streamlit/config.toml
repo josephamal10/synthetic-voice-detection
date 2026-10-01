@@ -1,0 +1,12 @@
+[theme]
+base = "dark"
+primaryColor = "#14b8a6"
+backgroundColor = "#0b0d10"
+secondaryBackgroundColor = "#14171c"
+textColor = "#f4f5f7"
+font = "sans serif"
+
+[server]
+# Voice clips are small; the 200 MB default would let one upload exhaust a
+# free-tier host's memory once decoded.
+maxUploadSize = 25

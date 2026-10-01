@@ -1,4 +1,11 @@
 venv/
 __pycache__/
 *.pyc
-.streamlit/
+.streamlit/secrets.toml
+users.db
+analysis_audio/
+
+# Academic deliverables (report, slides, Word/PDF drafts) stay local only
+/*.docx
+/*.pdf
+/*.pptx
