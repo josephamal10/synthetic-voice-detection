@@ -4,7 +4,6 @@ import io
 import itertools
 import os
 import tempfile
-import time
 import uuid
 
 import auth
@@ -76,6 +75,15 @@ MODEL_NOTES = {
 }
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Timestamps are recorded in Indian Standard Time, not the server's clock —
+# cloud hosts run on UTC, which would show every analysis 5.5 hours early.
+# A fixed offset (IST has no daylight saving) needs no tzdata package.
+APP_TZ = datetime.timezone(datetime.timedelta(hours=5, minutes=30), "IST")
+
+
+def now_local():
+    return datetime.datetime.now(APP_TZ)
 
 # Fresh integer per gauge/sparkline render, so each gets its own uniquely
 # named CSS keyframes/classes — several can be on screen at once (a
@@ -1475,7 +1483,7 @@ def analyse(model, model_name, filename, raw_bytes, show_details=True,
     # they're still drawing can't drop the record.
     history_add(
         filename, label, f"{p_genuine:.3f}", f"{threshold:.2f}", model_name, f"{margin:.3f}",
-        time.strftime("%Y-%m-%d %H:%M:%S"), audio_bytes=raw_bytes,
+        now_local().strftime("%Y-%m-%d %H:%M:%S"), audio_bytes=raw_bytes,
     )
 
     left, right = st.columns([1, 1.6])
@@ -1768,7 +1776,7 @@ def page_detect(models):
                     st.session_state.pending_recording = {
                         "raw_bytes": audio["bytes"],
                         "bytes": buf.getvalue(),
-                        "name": f"live_recording_{time.strftime('%H%M%S')}.wav",
+                        "name": f"live_recording_{now_local():%H%M%S}.wav",
                     }
                     st.session_state.recording_analysed = False
                     st.rerun()
@@ -2097,7 +2105,7 @@ def friendly_time(stamp):
         t = datetime.datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S")
     except (TypeError, ValueError):
         return stamp
-    today = datetime.date.today()
+    today = now_local().date()
     if t.date() == today:
         day = "Today"
     elif t.date() == today - datetime.timedelta(days=1):
