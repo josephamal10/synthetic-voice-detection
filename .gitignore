@@ -9,3 +9,6 @@ analysis_audio/
 /*.docx
 /*.pdf
 /*.pptx
+
+# Claude Code session config (local paths)
+.claude/
