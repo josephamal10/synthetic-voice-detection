@@ -4,10 +4,12 @@
 
 Voice-cloning tools can now copy someone's voice from a few seconds of audio, and the clones routinely fool human listeners. That powers a growing wave of scam calls: "family emergency" calls, fake executives authorising payments. VoiceGuard is an end-to-end detector built to counter that, from audio preprocessing and model training through to a full web app.
 
-<!-- LIVE-DEMO LINKS: uncomment once deployed
-**[▶ Live demo (Streamlit)](https://YOUR-APP.streamlit.app)** &nbsp;·&nbsp; **[▶ Live demo (Hugging Face)](https://huggingface.co/spaces/YOUR_HF_USERNAME/voiceguard)**
+### **[▶ Try the live demo](https://synthetic-voice-detection.streamlit.app)**
 
-No sign-up needed. Click **Continue as guest**.
+No sign-up needed. Click **Continue as guest**. If the app has been idle, give it about 30 seconds to wake up.
+
+<!-- HUGGING FACE LINK: add once the Space is live
+**[▶ Mirror on Hugging Face](https://huggingface.co/spaces/YOUR_HF_USERNAME/voiceguard)**
 -->
 
 ![Detection results for a genuine and a synthetic clip](docs/screenshots/03_detect_results.png)
