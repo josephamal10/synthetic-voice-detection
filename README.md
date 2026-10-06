@@ -8,10 +8,6 @@ Voice-cloning tools can now copy someone's voice from a few seconds of audio, an
 
 No sign-up needed. Click **Continue as guest**. If the app has been idle, give it about 30 seconds to wake up.
 
-<!-- HUGGING FACE LINK: add once the Space is live
-**[▶ Mirror on Hugging Face](https://huggingface.co/spaces/YOUR_HF_USERNAME/voiceguard)**
--->
-
 ![Detection results for a genuine and a synthetic clip](docs/screenshots/03_detect_results.png)
 
 ---
@@ -101,7 +97,6 @@ demo_clips/                Real and fake sample clips for trying the app
 sample_clips/              Classical-TTS held-out test samples
 classical_tts_augmentation/  The 120-clip classical TTS training set
 figures/                   ROC, DET and confusion-matrix plots
-deploy/huggingface/        Dockerfile + config for the Hugging Face Space
 ```
 
 ## Author
