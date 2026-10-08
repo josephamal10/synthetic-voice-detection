@@ -12,3 +12,6 @@ analysis_audio/
 
 # Claude Code session config (local paths)
 .claude/
+
+# Local backups of the academic documents
+doc_backups/
